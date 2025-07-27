@@ -4,7 +4,11 @@ load_dotenv(override=True)
 
 JWT_SECRET = os.getenv("JWT_SECRET")  
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
+
 AUTH_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+AUTH_ANDROID_CLIENT_ID = os.getenv("GOOGLE_ADNROID_CLIENT_ID")
+AUTH_IOS_CLIENT_ID = os.getenv("GOOGLE_IOS_CLIENT_ID")
+
 
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 

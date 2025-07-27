@@ -9,8 +9,9 @@ from pydantic import BaseModel
 # Add the current directory to Python path
 sys.path.append(str(Path(__file__).parent))
 from service.jwtService import verify_google_token,verify_jwt_token,create_jwt_token
-from dal import RecipeExtractionRequest, RecipeExtractionResponse,UserResponse,GoogleAuthRequest,users_collection,User
+from dal import RecipeExtractionRequest, RecipeExtractionResponse,UserResponse,GoogleAuthRequest,users_collection,User,GoogleCodeAuthRequest
 from api_controller import RecipeExtractionController
+from config.config import AUTH_CLIENT_ID,AUTH_ANDROID_CLIENT_ID,AUTH_IOS_CLIENT_ID,GOOGLE_CLIENT_SECRET
 import jwt
 
 
@@ -38,9 +39,9 @@ class GoogleTokenResponse(BaseModel):
 # Your Google OAuth client credentials
 
 GOOGLE_CLIENT_IDS = {
-    "web": "325026496663-har3jjodmb1ki3mu353i9uof6jld3a0m.apps.googleusercontent.com",
-    "android": "325026496663-l416irrbh7l8j4usoft9o5le6oba76al.apps.googleusercontent.com", 
-    "ios": "325026496663-gvus17kcbbb4r9v0dhjl6qc1jt1jgvm7.apps.googleusercontent.com"
+    "web":AUTH_CLIENT_ID ,
+    "android": AUTH_ANDROID_CLIENT_ID, 
+    "ios": AUTH_IOS_CLIENT_ID
 }
 
 # You can also store them as separate environment variables
@@ -82,6 +83,112 @@ async def verify_google_token_multiplatform(id_token: str):
     
     # If we get here, all verifications failed
     raise Exception(f"Token verification failed for all platforms. Errors: {'; '.join(verification_errors)}")
+
+
+async def exchange_google_code_for_tokens(code: str, client_id: str, redirect_uri: str):
+    """Exchange authorization code for Google tokens"""
+    
+    # Your Google client secret - make sure this is in your environment variables
+    client_secret = GOOGLE_CLIENT_SECRET  # Move this to env var
+    
+    token_url = "https://oauth2.googleapis.com/token"
+    
+    data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(token_url, data=data)
+            response.raise_for_status()
+            
+            tokens = response.json()
+            print(f"🔍 DEBUG: Token exchange successful: {tokens.keys()}")
+            
+            return tokens  # Contains access_token, id_token, refresh_token, etc.
+            
+        except httpx.HTTPStatusError as e:
+            print(f"❌ DEBUG: Token exchange failed: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"Token exchange failed: {e.response.text}")
+        except Exception as e:
+            print(f"❌ DEBUG: Token exchange error: {e}")
+            raise Exception(f"Token exchange error: {str(e)}")
+
+# Add this new endpoint for authorization code flow
+@app.post("/auth/google/code", response_model=UserResponse)
+async def google_auth_code(auth_request: GoogleCodeAuthRequest):
+    """Authenticate user with Google authorization code"""
+    
+    try:
+        # Step 1: Exchange authorization code for tokens
+        tokens = await exchange_google_code_for_tokens(
+            auth_request.code, 
+            auth_request.client_id, 
+            auth_request.redirect_uri
+        )
+        
+        # Step 2: Extract and verify the ID token
+        id_token = tokens.get("id_token")
+        if not id_token:
+            raise Exception("No id_token received from Google")
+        
+        # Step 3: Verify the ID token (reuse your existing function)
+        google_user_info = await verify_google_token_multiplatform(id_token)
+        
+    except Exception as e:
+        print(f"❌ DEBUG: Google auth code flow failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Google authentication failed: {str(e)}")
+    
+    # Rest of the code is the same as your existing endpoint
+    google_id = google_user_info["user_id"]
+    email = google_user_info["email"]
+    name = google_user_info.get("name", "")
+    picture = google_user_info.get("picture", "")
+
+    # Try to find the user in MongoDB
+    existing_user = users_collection.find_one({"google_id": google_id})
+
+    if not existing_user:
+        # User doesn't exist — insert new one
+        new_user = User(
+            google_id=google_id,
+            email=email,
+            name=name,
+            picture=picture,
+        )
+        users_collection.insert_one(new_user.dict())
+        user_data = new_user
+        user_id = str(new_user.dict().get('_id'))
+    else:
+        # Update fields in case they've changed
+        users_collection.update_one(
+            {"google_id": google_id},
+            {"$set": {"name": name, "picture": picture}}
+        )
+        user_id = str(existing_user['_id'])
+    
+    # Generate tokens
+    payload = {
+        "user_id": google_id,
+        "email": email,
+    }
+
+    jwt_token = create_jwt_token(payload)
+    refresh_token = create_jwt_token(payload, expires_delta=datetime.timedelta(days=30))
+
+    return UserResponse(
+        id=user_id,
+        google_id=google_id,
+        email=email,
+        name=name,
+        picture=picture,
+        jwt_token=jwt_token,
+        refresh_token=refresh_token,
+    )
 
 
 @app.post("/auth/google", response_model=UserResponse)
@@ -148,6 +255,7 @@ async def google_auth(auth_request: GoogleAuthRequest):
         jwt_token=jwt_token,
         refresh_token=refresh_token,
     )
+
 @app.get("/auth/me")
 async def get_current_user(Authorization: str = Header(None)):
     """Get current user info from JWT token"""
