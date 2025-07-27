@@ -117,6 +117,11 @@ class RecipeExtractionResponse(BaseModel):
     recipe_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
+class GoogleCodeAuthRequest(BaseModel):
+    code: str
+    client_id: str
+    redirect_uri: str
+
 class GoogleAuthRequest(BaseModel):
     id_token: str
 
