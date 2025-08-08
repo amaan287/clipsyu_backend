@@ -123,7 +123,7 @@ class GoogleCodeAuthRequest(BaseModel):
     redirect_uri: str
 
 class GoogleAuthRequest(BaseModel):
-    id_token: str
+    token: str
 
 class UserResponse(BaseModel):
     id: str
