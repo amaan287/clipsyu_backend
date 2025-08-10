@@ -43,7 +43,7 @@ class RecipeExtractionController:
         if not self.gemini_api_key:
             raise ValueError("GEMINI_APIKEY environment variable is required")
     
-    def extract_recipe_from_youtube(self, request: RecipeExtractionRequest) -> RecipeExtractionResponse:
+    def extract_recipe_from_youtube(self, request: RecipeExtractionRequest, user_id: str = None) -> RecipeExtractionResponse:
         """
         Extract recipe from YouTube video URL
         """
@@ -93,6 +93,10 @@ class RecipeExtractionController:
                     recipe_data['created_at'] = datetime.now()
                 if 'updated_at' not in recipe_data:
                     recipe_data['updated_at'] = datetime.now()
+
+                # Attach user info if provided
+                if user_id:
+                    recipe_data['user_id'] = user_id
                 
                 # Convert datetime string to datetime object if needed
                 if isinstance(recipe_data.get('savedDate'), str):
@@ -197,5 +201,36 @@ class RecipeExtractionController:
             return RecipeExtractionResponse(
                 success=False,
                 message="Failed to retrieve recipes",
+                error=str(e)
+            )
+    
+    def get_recipes_by_user_id(self, user_id: str) -> RecipeExtractionResponse:
+        """
+        Get all recipes for a specific user from MongoDB
+        """
+        try:
+            recipes = list(recipe_collection.find({"user_id": user_id}))
+            
+            # Convert ObjectId and datetime objects for serialization
+            for recipe in recipes:
+                recipe['_id'] = str(recipe['_id'])
+                for key, value in recipe.items():
+                    if isinstance(value, datetime):
+                        recipe[key] = value.isoformat()
+            
+            # Serialize all recipes
+            serialized_recipes = [serialize_recipe_data(recipe) for recipe in recipes]
+            
+            return RecipeExtractionResponse(
+                success=True,
+                message=f"Retrieved {len(recipes)} recipes for user {user_id} successfully",
+                recipe_data={"recipes": serialized_recipes}
+            )
+                
+        except Exception as e:
+            print(f"Error retrieving recipes for user {user_id}: {e}")
+            return RecipeExtractionResponse(
+                success=False,
+                message="Failed to retrieve recipes for user",
                 error=str(e)
             )

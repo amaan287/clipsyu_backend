@@ -1,6 +1,6 @@
 # models.py - Pydantic Models and Schema Definitions
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -53,6 +53,7 @@ class Recipe(BaseModel):
     channelName: str
     savedDate: datetime
     isRecipe: bool = False
+    user_id: Optional[str] = None
     
     # Additional fields for tracking
     youtube_url: Optional[str] = None
@@ -76,6 +77,8 @@ class User(BaseModel):
     email: str
     picture:str
     refresh_token:Optional[str] = None
+    created_at: Optional[datetime] = Field(default_factory=datetime.now)
+    updated_at: Optional[datetime] = Field(default_factory=datetime.now)
 
 # MongoDB Document Model (what gets stored in DB)
 class RecipeDocument(Recipe):
