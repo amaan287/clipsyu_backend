@@ -1,22 +1,21 @@
-from fastapi import Header,FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import sys
 from pathlib import Path
-import datetime
-import httpx
 from pydantic import BaseModel
-import time
-import requests
+from typing import Optional
+import jwt
 
 # Add the current directory to Python path
 sys.path.append(str(Path(__file__).parent))
-from service.jwtService import verify_google_token,verify_jwt_token,create_jwt_token
-from dal import RecipeExtractionRequest, RecipeExtractionResponse,UserResponse,GoogleAuthRequest,users_collection,User,GoogleCodeAuthRequest
-from api_controller import RecipeExtractionController
-from config.config import AUTH_CLIENT_ID,AUTH_ANDROID_CLIENT_ID,AUTH_IOS_CLIENT_ID,GOOGLE_CLIENT_SECRET
-import jwt
+from dal import RecipeExtractionRequest, RecipeExtractionResponse
+from controller.api_controller import RecipeExtractionController
+from controller.auth_controller import AuthController, AuthRequest
+from config.config import JWT_SECRET, JWT_ALGORITHM
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 app = FastAPI(title="Recipe Extractor API", version="1.0.0")
 
@@ -30,89 +29,40 @@ app.add_middleware(
 )
 
 controller = RecipeExtractionController()
+auth_controller = AuthController()
 
-# Add new Pydantic model for OAuth callback
-class GoogleOAuthCallbackRequest(BaseModel):
-    code: str
-    redirect_uri: str
-
-class GoogleTokenResponse(BaseModel):
-    id_token: str
+@app.post("/auth/login")
+async def login(request: AuthRequest):
+    return auth_controller.authenticate_user(request)
 
 
-async def getUserInfo(token:str):
-    response = await requests.get("https://www.googleapis.com/userinfo/v2/me",{"Authorization":f"Bearer {token}"})
-    print(response)
+@app.post("/auth/refresh")
+async def refresh_token(request: RefreshTokenRequest):
+    return auth_controller.refresh_access_token(request.refresh_token)
 
-@app.post("/auth/google", response_model=UserResponse)
-async def google_auth(auth_request: GoogleAuthRequest):
-    """Authenticate user with Google ID token, store if new, return JWT and refresh tokens"""
+@app.get("/auth/user/{user_id}")
+async def get_user(user_id: str):
+    return auth_controller.get_user_by_id(user_id)
     
-    try:
-        # Verify Google token against all possible client IDs
-        google_user_info = await getUserInfo(GoogleAuthRequest.token)
-        
-    except Exception as e:
-        # Enhanced error logging
-        try:
-            decoded = jwt.decode(auth_request.id_token, options={"verify_signature": False})
-            print(f"❌ DEBUG: Token details - aud: {decoded.get('aud')}, iss: {decoded.get('iss')}")
-        except Exception as decode_error:
-            print(f"❌ DEBUG: Could not decode token: {decode_error}")
-        
-        raise HTTPException(status_code=400, detail=f"Google token verification failed: {str(e)}")
-    
-    # Rest of your existing code remains the same...
-    google_id = google_user_info["user_id"]
-    email = google_user_info["email"]
-    name = google_user_info.get("name", "")
-    picture = google_user_info.get("picture", "")
-
-    # Try to find the user in MongoDB
-    existing_user = users_collection.find_one({"google_id": google_id})
-
-    if not existing_user:
-        # User doesn't exist — insert new one
-        new_user = User(
-            google_id=google_id,
-            email=email,
-            name=name,
-            picture=picture,
-        )
-        # ✅ FIX: Get the inserted ID properly
-        result = users_collection.insert_one(new_user.dict())
-        user_id = str(result.inserted_id)
-    else:
-        # Update fields in case they've changed
-        users_collection.update_one(
-            {"google_id": google_id},
-            {"$set": {"name": name, "picture": picture}}
-        )
-        user_id = str(existing_user['_id'])
-    
-    # Generate tokens
-    payload = {
-        "user_id": google_id,
-        "email": email,
-    }
-
-    jwt_token = create_jwt_token(payload)
-    refresh_token = create_jwt_token(payload, expires_delta=datetime.timedelta(days=30))
-
-    return UserResponse(
-        id=user_id,
-        google_id=google_id,
-        email=email,
-        name=name,
-        picture=picture,
-        jwt_token=jwt_token,
-        refresh_token=refresh_token,
-    )
-
-
 @app.post("/extract-recipe", response_model=RecipeExtractionResponse)
-async def extract_recipe(request: RecipeExtractionRequest):
-    response = controller.extract_recipe_from_youtube(request)
+async def extract_recipe(request: RecipeExtractionRequest, Authorization: Optional[str] = Header(default=None)):
+    # Require Bearer access token
+    if not Authorization or not Authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = Authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Access token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+
+    response = controller.extract_recipe_from_youtube(request, user_id=user_id)
     if not response.success:
         raise HTTPException(status_code=400, detail=response.error or response.message)
     return response
@@ -127,6 +77,29 @@ async def get_recipe(recipe_id: str):
 @app.get("/recipes", response_model=RecipeExtractionResponse)
 async def get_all_recipes():
     response = controller.get_all_recipes()
+    return response
+
+@app.get("/recipes/user/{user_id}", response_model=RecipeExtractionResponse)
+async def get_user_recipes(user_id: str, Authorization: Optional[str] = Header(default=None)):
+    # Require Bearer access token
+    if not Authorization or not Authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = Authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        token_user_id = payload.get("user_id")
+        if not token_user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Access token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+
+    response = controller.get_recipes_by_user_id(user_id)
+    if not response.success:
+        raise HTTPException(status_code=400, detail=response.error or response.message)
     return response
 
 @app.get("/")
