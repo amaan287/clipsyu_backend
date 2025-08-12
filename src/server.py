@@ -24,7 +24,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["POST", "GET", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -103,6 +103,10 @@ async def get_user_recipes(user_id: str, Authorization: Optional[str] = Header(d
     return response
 
 @app.get("/")
+async def root():
+    return {"message": "Recipe Extractor API is running!"}
+
+@app.head("/")
 async def root():
     return {"message": "Recipe Extractor API is running!"}
 
