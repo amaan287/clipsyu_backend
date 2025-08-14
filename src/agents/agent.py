@@ -23,11 +23,7 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 genai.configure(api_key=gemini_api_key)
 
 def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads"):
-    """Download YouTube video (full video, not just audio) with better error handling"""
-    import os
-    import re
-    import yt_dlp
-    
+    """Download YouTube video (full video, not just audio)"""
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
     
@@ -38,206 +34,62 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
         cleaned = re.sub(r'[^\w\s-]', '', cleaned)
         return cleaned.strip()
     
-    # Multiple configurations to try
-    configs = [
-        {
-            'cookies': cookies if os.path.exists(cookies) else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        {
-            'cookies': None,
-            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        {
-            'cookies': None,
-            'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        {
-            'cookies': None,
-            # Default user agent
-        }
-    ]
+    # First, get video info to create proper filename
+    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+        original_title = info.get('title', 'video')
+        safe_title = clean_filename(original_title)
     
-    info = None
-    last_error = None
-    
-    # Try to extract info with different configurations
-    for i, config in enumerate(configs):
-        try:
-            print(f"Attempting to extract info with config {i+1}/{len(configs)}")
-            
-            ydl_opts_info = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-            }
-            
-            # Add cookies if available and file exists
-            if config.get('cookies') and os.path.exists(config['cookies']):
-                ydl_opts_info['cookies'] = config['cookies']
-                print(f"Using cookies file: {config['cookies']}")
-            else:
-                print("No cookies file available or file doesn't exist")
-            
-            # Add user agent if specified
-            if config.get('user_agent'):
-                ydl_opts_info['http_headers'] = {
-                    'User-Agent': config['user_agent']
-                }
-            
-            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
-                info = ydl.extract_info(url, download=False)
-                print(f"Successfully extracted info with config {i+1}")
-                break
-                
-        except Exception as e:
-            last_error = e
-            print(f"Config {i+1} failed: {str(e)}")
-            continue
-    
-    if not info:
-        print(f"All configurations failed. Last error: {last_error}")
-        raise Exception(f"Failed to extract video info after trying all configurations. Last error: {str(last_error)}")
-    
-    # Extract metadata
-    original_title = info.get('title', 'video')
-    safe_title = clean_filename(original_title)
-    
-    metadata = {
-        "title": info.get("title"),
-        "description": info.get("description"),
-        "channel": info.get("channel"),
-        "uploader": info.get("uploader"),
-        "uploader_url": info.get("uploader_url"),
-        "upload_date": info.get("upload_date"),
-        "duration": info.get("duration"),
-        "view_count": info.get("view_count"),
-        "like_count": info.get("like_count"),
+    # Set up download options with cleaned filename
+    ydl_opts = {
+        'outtmpl': f'{output_path}/{safe_title}.%(ext)s',
+        'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+        'cookies': cookies,
+        'quiet': False,
     }
     
-    print("--- Video Metadata ---")
-    for key, value in metadata.items():
-        print(f"{key}: {value}")
-    
-    # Now try to download with the same successful configuration
-    downloaded_file = None
-    
-    for i, config in enumerate(configs):
-        try:
-            print(f"Attempting to download with config {i+1}/{len(configs)}")
-            
-            # Set up download options
-            ydl_opts = {
-                'outtmpl': f'{output_path}/{safe_title}.%(ext)s',
-                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
-                'quiet': False,
-                'no_warnings': False,
-            }
-            
-            # Add cookies if available and file exists
-            if config.get('cookies') and os.path.exists(config['cookies']):
-                ydl_opts['cookies'] = config['cookies']
-            
-            # Add user agent if specified
-            if config.get('user_agent'):
-                ydl_opts['http_headers'] = {
-                    'User-Agent': config['user_agent']
-                }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print(f"Downloading video: {url}")
-                ydl.download([url])
-            
-            # Determine the actual downloaded file path
-            downloaded_file = f"{output_path}/{safe_title}.mp4"
-            
-            # Check if file exists, if not, try to find it
-            if not os.path.exists(downloaded_file):
-                # Look for any video files in the directory that might match
-                for file in os.listdir(output_path):
-                    if file.endswith(('.mp4', '.webm', '.mkv')) and safe_title[:20] in file:
-                        downloaded_file = f"{output_path}/{file}"
-                        break
-            
-            # Verify the file exists
-            if os.path.exists(downloaded_file):
-                print(f"Video downloaded successfully to: {downloaded_file}")
-                break
-            else:
-                print(f"Download with config {i+1} completed but file not found")
-                continue
-                
-        except Exception as e:
-            print(f"Download with config {i+1} failed: {str(e)}")
-            last_error = e
-            continue
-    
-    if not downloaded_file or not os.path.exists(downloaded_file):
-        # List all files in the directory to help debug
-        files = os.listdir(output_path)
-        print(f"Available files in {output_path}: {files}")
-        raise FileNotFoundError(f"Failed to download video after trying all configurations. Expected: {output_path}/{safe_title}.mp4")
-    
-    return downloaded_file, metadata
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        print(f"Downloading video: {url}")
+        ydl.download([url])
+        info = ydl.extract_info(url, download=False)
+        
+        metadata = {
+            "title": info.get("title"),
+            "description": info.get("description"),
+            "channel": info.get("channel"),
+            "uploader": info.get("uploader"),
+            "uploader_url": info.get("uploader_url"),
+            "upload_date": info.get("upload_date"),
+            "duration": info.get("duration"),
+            "view_count": info.get("view_count"),
+            "like_count": info.get("like_count"),
+        }
+        
+        print("--- Video Metadata ---")
+        for key, value in metadata.items():
+            print(f"{key}: {value}")
+        
+        # Determine the actual downloaded file path
+        downloaded_file = f"{output_path}/{safe_title}.mp4"
+        
+        # Check if file exists, if not, try to find it
+        if not os.path.exists(downloaded_file):
+            # Look for any mp4 files in the directory that might match
+            for file in os.listdir(output_path):
+                if file.endswith('.mp4') and safe_title[:20] in file:
+                    downloaded_file = f"{output_path}/{file}"
+                    break
+        
+        # Verify the file exists
+        if not os.path.exists(downloaded_file):
+            # List all files in the directory to help debug
+            files = os.listdir(output_path)
+            print(f"Available files in {output_path}: {files}")
+            raise FileNotFoundError(f"Downloaded video file not found. Expected: {downloaded_file}")
+        
+        print(f"Video downloaded to: {downloaded_file}")
+        return downloaded_file, metadata
 
-
-# Alternative function for just extracting metadata (useful for testing)
-def extract_youtube_metadata(url: str, cookies: str = "cookies.txt"):
-    """Extract YouTube video metadata without downloading"""
-    import os
-    import yt_dlp
-    
-    # Multiple configurations to try
-    configs = [
-        {
-            'cookies': cookies if os.path.exists(cookies) else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        {
-            'cookies': None,
-            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        },
-        {'cookies': None}  # Default config
-    ]
-    
-    for i, config in enumerate(configs):
-        try:
-            print(f"Trying metadata extraction config {i+1}")
-            
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-            }
-            
-            if config.get('cookies') and os.path.exists(config['cookies']):
-                ydl_opts['cookies'] = config['cookies']
-            
-            if config.get('user_agent'):
-                ydl_opts['http_headers'] = {
-                    'User-Agent': config['user_agent']
-                }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                metadata = {
-                    "title": info.get("title"),
-                    "description": info.get("description"),
-                    "channel": info.get("channel"),
-                    "uploader": info.get("uploader"),
-                    "duration": info.get("duration"),
-                    "view_count": info.get("view_count"),
-                    "available": True
-                }
-                
-                return metadata
-                
-        except Exception as e:
-            print(f"Config {i+1} failed: {str(e)}")
-            continue
-    
-    return {"available": False, "error": "All extraction methods failed"}
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
     regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"
