@@ -5,7 +5,7 @@ env/
 ENV/
 
 
-
+cookies.txt
 # Python
 __pycache__/
 *.py[cod]
