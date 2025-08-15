@@ -13,7 +13,6 @@ import cv2
 import pytesseract
 from PIL import Image
 import numpy as np
-import browser_cookie3
 
 # Load environment variables
 load_dotenv()
@@ -23,113 +22,161 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
-
 def download_youtube_video(url: str, output_path: str = "./downloads"):
-    """Download YouTube video with automatic cookie handling"""
-    # Create output directory if it doesn't exist
+    """Enhanced YouTube video download using cookies.txt file"""
+ 
     os.makedirs(output_path, exist_ok=True)
     
-    # Clean title for filename
     def clean_filename(title):
-        # Remove or replace problematic characters
         cleaned = re.sub(r'[<>:"/\\|?*#]', '', title)
         cleaned = re.sub(r'[^\w\s-]', '', cleaned)
         return cleaned.strip()
     
-    # Try to get cookies from browser
-
-    # Set up download options
-    ydl_opts = {
-        'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
-        'quiet': False,
-        'no_warnings': False,
-        'extract_flat': False,
-    }
-    cookies_file = os.path.join(output_path, 'cookies.txt')
-    # Add cookies if available
-    if os.path.exists(cookies_file):
-        ydl_opts['cookiefile'] = cookies_file
-        print("Using cookies file for authentication")
+    # Check if cookies.txt exists in root folder
+    cookies_file = "cookies.txt"
+    if not os.path.exists(cookies_file):
+        print(f"Warning: {cookies_file} not found in root folder")
+        cookies_file = None
     else:
-        print("WARNING: No cookies available - may encounter bot detection")
-        print("If download fails, try logging into YouTube in your browser first")
-    
-    # Alternative headers to help avoid detection
-    ydl_opts['http_headers'] = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+        print(f"Using cookies file: {cookies_file}")
     
     try:
+        print("Attempting download with cookies.txt...")
+        
+        ydl_opts = {
+            'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+            'quiet': False,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        }
+        
+        # Add cookies file if it exists
+        if cookies_file:
+            ydl_opts['cookiefile'] = cookies_file
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # First, get video info to create proper filename
-            print(f"Extracting video info: {url}")
             info = ydl.extract_info(url, download=False)
-            original_title = info.get('title', 'video')
-            safe_title = clean_filename(original_title)
-            
-            # Update output template with safe filename
+            safe_title = clean_filename(info.get('title', 'video'))
             ydl_opts['outtmpl'] = f'{output_path}/{safe_title}.%(ext)s'
             
-            # Create new ydl instance with updated options
             with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                print(f"Downloading video: {url}")
                 ydl_download.download([url])
                 
+                # Return success
+                downloaded_file = f"{output_path}/{safe_title}.mp4"
                 metadata = {
                     "title": info.get("title"),
                     "description": info.get("description"),
                     "channel": info.get("channel"),
                     "uploader": info.get("uploader"),
-                    "uploader_url": info.get("uploader_url"),
-                    "upload_date": info.get("upload_date"),
                     "duration": info.get("duration"),
                     "view_count": info.get("view_count"),
-                    "like_count": info.get("like_count"),
                 }
                 
-                print("--- Video Metadata ---")
-                for key, value in metadata.items():
-                    print(f"{key}: {value}")
-                
-                # Determine the actual downloaded file path
-                downloaded_file = f"{output_path}/{safe_title}.mp4"
-                
-                # Check if file exists, if not, try to find it
-                if not os.path.exists(downloaded_file):
-                    # Look for any mp4 files in the directory that might match
-                    for file in os.listdir(output_path):
-                        if file.endswith('.mp4') and safe_title[:20] in file:
-                            downloaded_file = f"{output_path}/{file}"
-                            break
-                
-                # Verify the file exists
-                if not os.path.exists(downloaded_file):
-                    # List all files in the directory to help debug
-                    files = os.listdir(output_path)
-                    print(f"Available files in {output_path}: {files}")
-                    raise FileNotFoundError(f"Downloaded video file not found. Expected: {downloaded_file}")
-                
-                print(f"Video downloaded successfully to: {downloaded_file}")
+                print(f"Video downloaded successfully: {downloaded_file}")
                 return downloaded_file, metadata
                 
     except Exception as e:
-        error_msg = str(e)
-        if "Sign in to confirm you're not a bot" in error_msg:
-            print("\n" + "="*60)
-            print("AUTHENTICATION ERROR - Bot detection triggered")
-            print("="*60)
-            print("Solutions:")
-            print("1. Make sure you're logged into YouTube in your browser")
-            print("2. Try opening the video URL in your browser first")
-            print("3. Close and reopen your browser, then try again")
-            print("4. If using Chrome, make sure it's your default browser")
-            print("5. Try using a different browser (Firefox/Edge)")
-            print("\nAlternative manual method:")
-            print("1. Install browser extension like 'Get cookies.txt LOCALLY'")
-            print("2. Export YouTube cookies to cookies.txt")
-            print("3. Place cookies.txt in the same directory as this script")
-            print("="*60)
-        raise e
+        print(f"Download with cookies failed: {e}")
+        
+        # Fallback: Try without cookies
+        try:
+            print("Attempting download without cookies...")
+            ydl_opts_fallback = {
+                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+                'quiet': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                info = ydl.extract_info(url, download=False)
+                safe_title = clean_filename(info.get('title', 'video'))
+                ydl_opts_fallback['outtmpl'] = f'{output_path}/{safe_title}.%(ext)s'
+                
+                with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl_download:
+                    ydl_download.download([url])
+                    
+                    downloaded_file = f"{output_path}/{safe_title}.mp4"
+                    metadata = {
+                        "title": info.get("title"),
+                        "description": info.get("description"),
+                        "channel": info.get("channel"),
+                        "uploader": info.get("uploader"),
+                        "duration": info.get("duration"),
+                        "view_count": info.get("view_count"),
+                    }
+                    
+                    print(f"Video downloaded successfully: {downloaded_file}")
+                    return downloaded_file, metadata
+                    
+        except Exception as fallback_error:
+            print(f"Fallback download also failed: {fallback_error}")
+            # Fallback to API-only analysis
+            print("All download methods failed. Falling back to API-only analysis...")
+            raise Exception("Could not download video. Consider using API-only analysis method.")
+
+# Alternative: API-only workflow (recommended)
+def api_only_workflow(video_url, youtube_api_key, gemini_api_key):
+    """Complete workflow without downloading video"""
+    
+    # Get video metadata using YouTube API
+    video_id = get_video_id_from_url(video_url)
+    youtube = build('youtube', 'v3', developerKey=youtube_api_key)
+    
+    # Get video details
+    video_response = youtube.videos().list(
+        part='snippet,statistics,contentDetails',
+        id=video_id
+    ).execute()
+    
+    video_data = video_response['items'][0]
+    
+    # Get comments
+    comments_response = youtube.commentThreads().list(
+        part='snippet',
+        videoId=video_id,
+        maxResults=10,
+        order='relevance'
+    ).execute()
+    
+    comments = []
+    for item in comments_response['items']:
+        comment = item['snippet']['topLevelComment']['snippet']
+        comments.append({
+            'text': comment['textDisplay'],
+            'author': comment['authorDisplayName']
+        })
+    
+    # Prepare content for AI
+    content = f"""
+    Title: {video_data['snippet']['title']}
+    Channel: {video_data['snippet']['channelTitle']}
+    Description: {video_data['snippet']['description'][:2000]}
+    
+    Top Comments:
+    {json.dumps(comments[:5], indent=2)}
+    """
+    
+    # Use Gemini to analyze
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    
+    response = model.generate_content(f"""
+    Analyze this YouTube video content and extract recipe information if present:
+    
+    {content}
+    
+    Return detailed recipe in JSON format if found, or indicate no recipe present.
+    """)
+    
+    return {
+        "video_data": video_data,
+        "comments": comments,
+        "recipe_analysis": response.text
+    }
 
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
