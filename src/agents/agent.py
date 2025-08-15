@@ -23,7 +23,7 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
-def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads"):
+def download_youtube_video(url: str, cookies: str = "../../cookies.txt", output_path: str = "./downloads"):
     """Download YouTube video and extract metadata"""
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
