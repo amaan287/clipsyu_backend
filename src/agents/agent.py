@@ -564,6 +564,55 @@ def print_recipe(recipe_data):
     print(json.dumps(recipe_data, indent=2, ensure_ascii=False))
     print("="*50)
 
+def analyze_youtube_video_api_only(url):
+    """
+    Analyze YouTube video using only APIs (no video download)
+    Returns recipe data or None if analysis fails
+    """
+    print("=== STARTING API-ONLY ANALYSIS ===")
+    
+    try:
+        # Use API-only workflow
+        api_result = api_only_workflow(url, google_cloud_api_key, gemini_api_key)
+        
+        # Extract metadata from API result
+        video_data = api_result['video_data']
+        metadata = {
+            "title": video_data['snippet']['title'],
+            "description": video_data['snippet']['description'],
+            "channel": video_data['snippet']['channelTitle'],
+            "uploader": video_data['snippet']['channelTitle'],
+            "duration": video_data['contentDetails']['duration'],
+            "view_count": video_data['statistics'].get('viewCount', 0),
+        }
+        
+        # Use API analysis as video analysis
+        video_analysis = api_result['recipe_analysis']
+        
+        # Get first comment from API result
+        comment_info = api_result['comments'][0] if api_result['comments'] else None
+        if comment_info:
+            comment_info = {
+                'author': comment_info['author'],
+                'text': comment_info['text'],
+                'likes': 0,  # Not available in this API call
+                'published': 'Unknown'
+            }
+        
+        print(f"Analyzing: {metadata['title']}")
+        print(f"Channel: {metadata['channel']}")
+        
+        # Extract recipe using AI (no OCR text available)
+        recipe_data = extract_recipe_with_ai(metadata, comment_info, video_analysis, "")
+        
+        return recipe_data
+        
+    except Exception as e:
+        print(f"API-only analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 def main():
     """Main function to orchestrate the workflow"""
     required_env_vars = [
@@ -583,19 +632,54 @@ def main():
         print("Error: No URL provided")
         return
     
+    # Ask user for preferred method
+    print("\nChoose analysis method:")
+    print("1. Try video download first (with fallback to API-only)")
+    print("2. API-only analysis (faster, no video download)")
+    choice = input("Enter choice (1 or 2): ").strip()
+    
+    if choice == "2":
+        # Direct API-only analysis
+        recipe_data = analyze_youtube_video_api_only(url)
+        if recipe_data:
+            print_recipe(recipe_data)
+            print("\n=== PROCESS COMPLETED ===")
+        else:
+            print("Analysis failed")
+        return
+    
+    # Original workflow with fallback (choice == "1" or default)
+    video_file = None
+    metadata = {}
+    
     try:
-        # Download video
-        print("=== DOWNLOADING VIDEO ===")
+        # Try to download video first
+        print("=== ATTEMPTING VIDEO DOWNLOAD ===")
         video_file, metadata = download_youtube_video(url)
+        print("Video download successful!")
         
+    except Exception as download_error:
+        print(f"Video download failed: {download_error}")
+        print("=== FALLING BACK TO API-ONLY ANALYSIS ===")
+        
+        # Use the dedicated API-only function
+        recipe_data = analyze_youtube_video_api_only(url)
+        if recipe_data:
+            print_recipe(recipe_data)
+            print("\n=== PROCESS COMPLETED ===")
+        else:
+            print("Both download and API-only analysis failed")
+        return
+    
+    # Continue with video-based analysis
+    try:
         # Get first comment
         print("\n=== FETCHING FIRST COMMENT ===")
-        comment_info = None  # Always define it first
+        comment_info = None
         try:
             comment_info = get_first_comment_from_video(google_cloud_api_key, url)
         except Exception as e:
             print(f"Failed to fetch comment: {e}")
-            # comment_info remains None
         
         if isinstance(comment_info, dict):
             print(f"Author: {comment_info['author']}")
@@ -603,7 +687,7 @@ def main():
             print(f"Likes: {comment_info['likes']}")
             print(f"Published: {comment_info['published']}")
         else:
-            print(comment_info)
+            print(comment_info if comment_info else "No comment data available")
         
         # Analyze video with Gemini
         print("\n=== ANALYZING VIDEO WITH GEMINI ===")
@@ -617,8 +701,10 @@ def main():
         if ocr_text:
             print(f"OCR extracted text ({len(ocr_text)} characters):")
             print(ocr_text[:500] + "..." if len(ocr_text) > 500 else ocr_text)
+        else:
+            ocr_text = ""
         
-        # Extract recipe using AI (including OCR text)
+        # Extract recipe using AI
         print("\n=== EXTRACTING RECIPE WITH AI ===")
         recipe_data = extract_recipe_with_ai(metadata, comment_info, video_analysis, ocr_text)
         print_recipe(recipe_data)
@@ -626,7 +712,121 @@ def main():
         print("\n=== PROCESS COMPLETED ===")
         
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An error occurred during processing: {e}")
+        import traceback
+        traceback.print_exc()
+    """Main function to orchestrate the workflow"""
+    required_env_vars = [
+        ("GOOGLE_CLOUD_API_KEY", google_cloud_api_key),
+        ("GEMINI_APIKEY", gemini_api_key)
+    ]
+    
+    for var_name, var_value in required_env_vars:
+        if not var_value:
+            print(f"Error: {var_name} not found in environment variables")
+            return
+    
+    # Get URL from user
+    url = input("Enter YouTube video URL: ").strip()
+    
+    if not url:
+        print("Error: No URL provided")
+        return
+    
+    video_file = None
+    metadata = {}
+    
+    try:
+        # Try to download video first
+        print("=== ATTEMPTING VIDEO DOWNLOAD ===")
+        video_file, metadata = download_youtube_video(url)
+        print("Video download successful!")
+        
+    except Exception as download_error:
+        print(f"Video download failed: {download_error}")
+        print("=== FALLING BACK TO API-ONLY ANALYSIS ===")
+        
+        try:
+            # Use API-only workflow
+            api_result = api_only_workflow(url, google_cloud_api_key, gemini_api_key)
+            
+            # Extract metadata from API result
+            video_data = api_result['video_data']
+            metadata = {
+                "title": video_data['snippet']['title'],
+                "description": video_data['snippet']['description'],
+                "channel": video_data['snippet']['channelTitle'],
+                "uploader": video_data['snippet']['channelTitle'],
+                "duration": video_data['contentDetails']['duration'],
+                "view_count": video_data['statistics'].get('viewCount', 0),
+            }
+            
+            # Use API analysis as video analysis
+            video_analysis = api_result['recipe_analysis']
+            
+            # Get first comment from API result
+            comment_info = api_result['comments'][0] if api_result['comments'] else None
+            if comment_info:
+                comment_info = {
+                    'author': comment_info['author'],
+                    'text': comment_info['text'],
+                    'likes': 0,  # Not available in this API call
+                    'published': 'Unknown'
+                }
+            
+        except Exception as api_error:
+            print(f"API-only workflow also failed: {api_error}")
+            return
+    
+    # Continue with the rest of the workflow
+    try:
+        # Get first comment (if not already obtained from API)
+        if 'comment_info' not in locals():
+            print("\n=== FETCHING FIRST COMMENT ===")
+            comment_info = None
+            try:
+                comment_info = get_first_comment_from_video(google_cloud_api_key, url)
+            except Exception as e:
+                print(f"Failed to fetch comment: {e}")
+        
+        if isinstance(comment_info, dict):
+            print(f"Author: {comment_info['author']}")
+            print(f"Comment: {comment_info['text']}")
+            print(f"Likes: {comment_info['likes']}")
+            print(f"Published: {comment_info['published']}")
+        else:
+            print(comment_info if comment_info else "No comment data available")
+        
+        # Analyze video with Gemini (if we have a video file)
+        if video_file:
+            print("\n=== ANALYZING VIDEO WITH GEMINI ===")
+            video_analysis = transcribe_video_with_gemini(video_file)
+            print("Video analysis completed!")
+            
+            # Extract text from video frames using OCR (if triggered)
+            print("\n=== EXTRACTING TEXT FROM VIDEO FRAMES ===")
+            ocr_text = extract_text_from_video_frames(video_file, video_analysis)
+            
+            if ocr_text:
+                print(f"OCR extracted text ({len(ocr_text)} characters):")
+                print(ocr_text[:500] + "..." if len(ocr_text) > 500 else ocr_text)
+            else:
+                ocr_text = ""
+        else:
+            print("\n=== USING API-BASED ANALYSIS ===")
+            # video_analysis already set from API workflow
+            ocr_text = ""  # No OCR possible without video file
+            print("Using metadata and comments for recipe extraction")
+        
+        # Extract recipe using AI
+        print("\n=== EXTRACTING RECIPE WITH AI ===")
+        recipe_data = extract_recipe_with_ai(metadata, comment_info, video_analysis, ocr_text)
+        print_recipe(recipe_data)
+        
+        print("\n=== PROCESS COMPLETED ===")
+        
+    except Exception as e:
+        print(f"An error occurred during processing: {e}")
         import traceback
         traceback.print_exc()
 
