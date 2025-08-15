@@ -23,58 +23,6 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
-def get_browser_cookies():
-    """Get YouTube cookies from browser to bypass bot detection"""
-    try:
-        # Try to get cookies from Chrome first
-        print("Attempting to get cookies from Chrome...")
-        cookies = browser_cookie3.chrome(domain_name='youtube.com')
-        if cookies:
-            print("Successfully retrieved cookies from Chrome")
-            return cookies
-    except Exception as e:
-        print(f"Chrome cookies failed: {e}")
-    
-    try:
-        # Try Firefox as backup
-        print("Attempting to get cookies from Firefox...")
-        cookies = browser_cookie3.firefox(domain_name='youtube.com')
-        if cookies:
-            print("Successfully retrieved cookies from Firefox")
-            return cookies
-    except Exception as e:
-        print(f"Firefox cookies failed: {e}")
-    
-    print("Could not retrieve browser cookies")
-    return None
-
-def save_cookies_to_file(cookies, filepath="cookies.txt"):
-    """Save cookies to Netscape format file for yt-dlp"""
-    if not cookies:
-        return False
-    
-    try:
-        with open(filepath, 'w') as f:
-            f.write("# Netscape HTTP Cookie File\n")
-            f.write("# This is a generated file! Do not edit.\n\n")
-            
-            for cookie in cookies:
-                # Convert to Netscape format
-                domain = cookie.domain
-                flag = "TRUE" if domain.startswith('.') else "FALSE"
-                path = cookie.path
-                secure = "TRUE" if cookie.secure else "FALSE"
-                expiration = str(int(cookie.expires)) if cookie.expires else "0"
-                name = cookie.name
-                value = cookie.value
-                
-                f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n")
-        
-        print(f"Cookies saved to {filepath}")
-        return True
-    except Exception as e:
-        print(f"Error saving cookies: {e}")
-        return False
 
 def download_youtube_video(url: str, output_path: str = "./downloads"):
     """Download YouTube video with automatic cookie handling"""
@@ -89,16 +37,7 @@ def download_youtube_video(url: str, output_path: str = "./downloads"):
         return cleaned.strip()
     
     # Try to get cookies from browser
-    cookies = get_browser_cookies()
-    cookies_file = None
-    
-    if cookies:
-        cookies_file = "cookies.txt"
-        if save_cookies_to_file(cookies, cookies_file):
-            print("Using browser cookies for authentication")
-        else:
-            cookies_file = None
-    
+
     # Set up download options
     ydl_opts = {
         'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
@@ -106,9 +45,9 @@ def download_youtube_video(url: str, output_path: str = "./downloads"):
         'no_warnings': False,
         'extract_flat': False,
     }
-    
+    cookies_file = os.path.join(output_path, 'cookies.txt')
     # Add cookies if available
-    if cookies_file and os.path.exists(cookies_file):
+    if os.path.exists(cookies_file):
         ydl_opts['cookiefile'] = cookies_file
         print("Using cookies file for authentication")
     else:
