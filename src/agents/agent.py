@@ -14,7 +14,8 @@ import cv2
 import pytesseract
 from PIL import Image
 import numpy as np
-
+import subprocess
+import json
 # Load environment variables
 load_dotenv()
 google_cloud_api_key = os.getenv("GOOGLE_CLOUD_API_KEY")
@@ -24,46 +25,56 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 genai.configure(api_key=gemini_api_key)
 
 def download_youtube_video(url: str, cookies: str = "../../cookies.txt", output_path: str = "./downloads"):
-    """Download YouTube video and extract metadata"""
+    """Download YouTube video using yt-dlp CLI and extract metadata"""
+    
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
-    
-    ydl_opts = {
-        'outtmpl': f'{output_path}/%(title)s.%(ext)s',
-        'format': 'best[ext=mp4]/best',
-        'cookies': cookies,
-        'quiet': False,
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        print(f"Downloading video: {url}")
-        ydl.download([url])
-        info = ydl.extract_info(url, download=False)
-        
-        metadata = {
-            "title": info.get("title"),
-            "description": info.get("description"),
-            "channel": info.get("channel"),
-            "uploader": info.get("uploader"),
-            "uploader_url": info.get("uploader_url"),
-            "upload_date": info.get("upload_date"),
-            "duration": info.get("duration"),
-            "view_count": info.get("view_count"),
-            "like_count": info.get("like_count"),
-        }
-        
-        print("--- Video Metadata ---")
-        for key, value in metadata.items():
-            print(f"{key}: {value}")
-        
-        # Get the downloaded file path
-        downloaded_file = f"{output_path}/{info.get('title')}.mp4"
-        # Clean filename (remove invalid characters)
-        safe_title = re.sub(r'[<>:"/\\|?*]', '', info.get('title', 'video'))
-        downloaded_file = f"{output_path}/{safe_title}.mp4"
-        
-        return downloaded_file, metadata
 
+    # Command to get metadata in JSON
+    metadata_cmd = [
+        "yt-dlp",
+        "--cookies", cookies,
+        "--dump-json",
+        url
+    ]
+    
+    print(f"Fetching metadata for: {url}")
+    result = subprocess.run(metadata_cmd, capture_output=True, text=True)
+    info = json.loads(result.stdout)
+
+    metadata = {
+        "title": info.get("title"),
+        "description": info.get("description"),
+        "channel": info.get("channel"),
+        "uploader": info.get("uploader"),
+        "uploader_url": info.get("uploader_url"),
+        "upload_date": info.get("upload_date"),
+        "duration": info.get("duration"),
+        "view_count": info.get("view_count"),
+        "like_count": info.get("like_count"),
+    }
+
+    print("--- Video Metadata ---")
+    for key, value in metadata.items():
+        print(f"{key}: {value}")
+
+    # Clean filename
+    safe_title = re.sub(r'[<>:"/\\|?*]', '', info.get('title', 'video'))
+    downloaded_file = os.path.join(output_path, f"{safe_title}.mp4")
+
+    # Command to download video
+    download_cmd = [
+        "yt-dlp",
+        "--cookies", cookies,
+        "-f", "best[ext=mp4]/best",
+        "-o", f"{output_path}/%(title)s.%(ext)s",
+        url
+    ]
+
+    print(f"Downloading video: {url}")
+    subprocess.run(download_cmd)
+
+    return downloaded_file, metadata
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
     regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"
