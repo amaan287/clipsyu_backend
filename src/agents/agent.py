@@ -16,6 +16,8 @@ from PIL import Image
 import numpy as np
 import subprocess
 import json
+from typing import Optional, Tuple, Dict
+
 # Load environment variables
 load_dotenv()
 google_cloud_api_key = os.getenv("GOOGLE_CLOUD_API_KEY")
@@ -24,57 +26,129 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
-def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads"):
+def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
     """Download YouTube video using yt-dlp CLI and extract metadata"""
     
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
 
+    # Check if cookies file exists
+    if not os.path.exists(cookies):
+        print(f"Warning: Cookies file '{cookies}' not found. Proceeding without cookies.")
+        use_cookies = False
+    else:
+        use_cookies = True
+
     # Command to get metadata in JSON
-    metadata_cmd = [
-        "yt-dlp",
-        "--cookies", cookies,
-        "--dump-json",
-        url
-    ]
+    metadata_cmd = ["yt-dlp", "--dump-json", url]
+    if use_cookies:
+        metadata_cmd.extend(["--cookies", cookies])
     
     print(f"Fetching metadata for: {url}")
-    result = subprocess.run(metadata_cmd, capture_output=True, text=True)
-    info = json.loads(result.stdout)
+    try:
+        result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            print(f"Error fetching metadata: {result.stderr}")
+            return None, None
+            
+        if not result.stdout.strip():
+            print("Error: No metadata returned from yt-dlp")
+            return None, None
+            
+        # Parse JSON metadata
+        info = json.loads(result.stdout)
+        
+    except subprocess.TimeoutExpired:
+        print("Error: Metadata fetch timed out")
+        return None, None
+    except json.JSONDecodeError as e:
+        print(f"Error parsing metadata JSON: {e}")
+        print(f"Raw output: {result.stdout[:200]}...")  # Show first 200 chars
+        print(f"Error output: {result.stderr}")
+        return None, None
+    except Exception as e:
+        print(f"Unexpected error during metadata fetch: {e}")
+        return None, None
 
+    # Extract metadata safely
     metadata = {
-        "title": info.get("title"),
-        "description": info.get("description"),
-        "channel": info.get("channel"),
-        "uploader": info.get("uploader"),
-        "uploader_url": info.get("uploader_url"),
-        "upload_date": info.get("upload_date"),
-        "duration": info.get("duration"),
-        "view_count": info.get("view_count"),
-        "like_count": info.get("like_count"),
+        "title": info.get("title", "Unknown Title"),
+        "description": info.get("description", ""),
+        "channel": info.get("channel", ""),
+        "uploader": info.get("uploader", ""),
+        "uploader_url": info.get("uploader_url", ""),
+        "upload_date": info.get("upload_date", ""),
+        "duration": info.get("duration", 0),
+        "view_count": info.get("view_count", 0),
+        "like_count": info.get("like_count", 0),
+        "webpage_url": info.get("webpage_url", url),
+        "id": info.get("id", ""),
     }
 
     print("--- Video Metadata ---")
     for key, value in metadata.items():
         print(f"{key}: {value}")
 
-    # Clean filename
-    safe_title = re.sub(r'[<>:"/\\|?*]', '', info.get('title', 'video'))
-    downloaded_file = os.path.join(output_path, f"{safe_title}.mp4")
-
+    # Clean filename for download
+    safe_title = re.sub(r'[<>:"/\\|?*]', '', metadata["title"])
+    safe_title = safe_title[:100]  # Limit length to avoid filesystem issues
+    
     # Command to download video
     download_cmd = [
         "yt-dlp",
-        "--cookies", cookies,
         "-f", "best[ext=mp4]/best",
-        "-o", f"{output_path}/%(title)s.%(ext)s",
+        "-o", f"{output_path}/%(title).100s.%(ext)s",  # Limit title length
         url
     ]
+    
+    if use_cookies:
+        download_cmd.extend(["--cookies", cookies])
 
     print(f"Downloading video: {url}")
-    subprocess.run(download_cmd)
+    try:
+        download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
+        
+        if download_result.returncode != 0:
+            print(f"Error downloading video: {download_result.stderr}")
+            return None, metadata
+            
+        print("Download completed successfully!")
+        
+        # Find the downloaded file
+        downloaded_file = find_downloaded_file(output_path, safe_title, metadata["id"])
+        
+        return downloaded_file, metadata
+        
+    except subprocess.TimeoutExpired:
+        print("Error: Video download timed out")
+        return None, metadata
+    except Exception as e:
+        print(f"Unexpected error during download: {e}")
+        return None, metadata
 
-    return downloaded_file, metadata
+def find_downloaded_file(output_path: str, safe_title: str, video_id: str) -> Optional[str]:
+    """Find the downloaded file in the output directory"""
+    
+    # Common video extensions
+    extensions = ['.mp4', '.webm', '.mkv', '.avi']
+    
+    # Try to find file by title
+    for ext in extensions:
+        potential_file = os.path.join(output_path, f"{safe_title}{ext}")
+        if os.path.exists(potential_file):
+            return potential_file
+    
+    # If not found by title, search all files in directory
+    if os.path.exists(output_path):
+        for filename in os.listdir(output_path):
+            if video_id in filename or safe_title in filename:
+                full_path = os.path.join(output_path, filename)
+                if os.path.isfile(full_path):
+                    return full_path
+    
+    print(f"Warning: Could not locate downloaded file in {output_path}")
+    return None
 
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
