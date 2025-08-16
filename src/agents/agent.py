@@ -75,10 +75,7 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
     subprocess.run(download_cmd)
 
     return downloaded_file, metadata
-<<<<<<< HEAD
-=======
 
->>>>>>> 83e8e75a2d4440b5899d1526515695876cacdc92
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
     regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"
