@@ -62,11 +62,11 @@ async def extract_recipe(request: RecipeExtractionRequest, Authorization: Option
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    response = controller.extract_recipe_from_youtube(request, user_id=user_id)
+    # Add await here
+    response = await controller.extract_recipe_from_youtube(request, user_id=user_id)
     if not response.success:
         raise HTTPException(status_code=400, detail=response.error or response.message)
     return response
-
 @app.get("/recipe/{recipe_id}", response_model=RecipeExtractionResponse)
 async def get_recipe(recipe_id: str):
     response = controller.get_recipe_by_id(recipe_id)

@@ -10,7 +10,6 @@ import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import re
-
 import asyncio
 # Load environment variables
 load_dotenv()
@@ -44,7 +43,7 @@ class RecipeExtractionController:
         if not self.gemini_api_key:
             raise ValueError("GEMINI_APIKEY environment variable is required")
     
-    def extract_recipe_from_youtube(self, request: RecipeExtractionRequest, user_id: str = None) -> RecipeExtractionResponse:
+    async def extract_recipe_from_youtube(self, request: RecipeExtractionRequest, user_id: str = None) -> RecipeExtractionResponse:
         """
         Extract recipe from YouTube video URL
         """
@@ -54,7 +53,7 @@ class RecipeExtractionController:
             # Step 1: Download the video
             print("Downloading video...")
             if "youtube.com/" in request.url or "youtu.be/" in request.url:
-                video_file, metadata =asyncio.run(download_youtube_video(request.url))
+                video_file, metadata = await download_youtube_video(request.url)
             elif "instagram.com/" in request.url or "instagr.am/" in request.url:
                 video_file, metadata = download_instagram_video(request.url)
             else:
