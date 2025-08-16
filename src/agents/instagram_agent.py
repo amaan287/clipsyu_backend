@@ -47,7 +47,7 @@ def extract_instagram_url_info(url):
     
     return None, None
 
-async def download_instagram_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
+async def download_instagram_video(url: str, cookies: str = "instagramcookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
     """Download Instagram video using yt-dlp CLI with Playwright pre-navigation and extract metadata"""
     
     # Create output directory if it doesn't exist
