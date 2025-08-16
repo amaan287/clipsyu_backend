@@ -70,7 +70,7 @@ async def download_instagram_video(url: str, cookies: str = "cookies.txt", outpu
                     "--no-sandbox", 
                     "--disable-setuid-sandbox",
                     "--disable-blink-features=AutomationControlled",
-                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "--user-agent=Chrome/120.0.0.0"
                 ]
             )
             page = await browser.new_page()
@@ -80,9 +80,6 @@ async def download_instagram_video(url: str, cookies: str = "cookies.txt", outpu
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none'
             })
             
             # Load cookies if available
@@ -118,11 +115,6 @@ async def download_instagram_video(url: str, cookies: str = "cookies.txt", outpu
         metadata_cmd.extend(["--cookies", cookies])
     else:
         metadata_cmd.extend(["--cookies-from-browser", "chrome"])
-    
-    # Add Instagram-specific options
-    metadata_cmd.extend([
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ])
     
     print(f"Fetching metadata for: {url}")
     try:
