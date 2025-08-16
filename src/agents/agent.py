@@ -17,6 +17,7 @@ import numpy as np
 import subprocess
 import json
 from typing import Optional, Tuple, Dict
+from playwright.sync_api import sync_playwright
 
 # Load environment variables
 load_dotenv()
@@ -26,8 +27,9 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
+
 def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
-    """Download YouTube video using yt-dlp CLI and extract metadata"""
+    """Download YouTube video using yt-dlp CLI with Playwright pre-navigation and extract metadata"""
     
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
@@ -38,6 +40,45 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
         use_cookies = False
     else:
         use_cookies = True
+
+    # Pre-navigate to URL using Playwright
+    print(f"Pre-navigating to URL with Playwright: {url}")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
+            )
+            page = browser.new_page()
+            
+            # Load cookies if available
+            if use_cookies and os.path.exists(cookies):
+                try:
+                    # Try to load cookies as Playwright format (JSON)
+                    with open(cookies, 'r') as f:
+                        if cookies.endswith('.json'):
+                            cookies_data = json.load(f)
+                            page.context.add_cookies(cookies_data)
+                        else:
+                            print("Note: Netscape cookies format detected, will be used by yt-dlp directly")
+                except Exception as e:
+                    print(f"Warning: Could not load cookies for Playwright: {e}")
+            
+            # Navigate to the YouTube URL
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            
+            # Get page title to verify successful navigation
+            page_title = page.title()
+            print(f"Successfully navigated to: {page_title}")
+            
+            # Wait a moment to ensure page is fully loaded
+            page.wait_for_timeout(2000)
+            
+            browser.close()
+            
+    except Exception as e:
+        print(f"Warning: Playwright navigation failed: {e}")
+        print("Proceeding with direct yt-dlp download...")
 
     # Command to get metadata in JSON
     metadata_cmd = ["yt-dlp", "--dump-json", url]
