@@ -55,7 +55,7 @@ class RecipeExtractionController:
             if "youtube.com/" in request.url or "youtu.be/" in request.url:
                 video_file, metadata = await download_youtube_video(request.url)
             elif "instagram.com/" in request.url or "instagr.am/" in request.url:
-                video_file, metadata = download_instagram_video(request.url)
+                video_file, metadata = await download_instagram_video(request.url)
             else:
                 raise ValueError("Unsupported URL. Only YouTube and Instagram URLs are supported.")
             
