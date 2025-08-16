@@ -17,7 +17,7 @@ import numpy as np
 import subprocess
 import json
 from typing import Optional, Tuple, Dict
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 
 # Load environment variables
 load_dotenv()
@@ -44,7 +44,7 @@ async def download_youtube_video(url: str, cookies: str = "cookies.txt", output_
     # Pre-navigate to URL using Playwright (async)
     print(f"Pre-navigating to URL with Playwright: {url}")
     try:
-        async with sync_playwright() as p:
+        async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
