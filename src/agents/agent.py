@@ -17,7 +17,7 @@ import numpy as np
 import subprocess
 import json
 from typing import Optional, Tuple, Dict
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import async_playwright
 
 # Load environment variables
 load_dotenv()
@@ -28,7 +28,7 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 genai.configure(api_key=gemini_api_key)
 
 
-def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
+async def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
     """Download YouTube video using yt-dlp CLI with Playwright pre-navigation and extract metadata"""
     
     # Create output directory if it doesn't exist
@@ -41,40 +41,50 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
     else:
         use_cookies = True
 
-    # Pre-navigate to URL using Playwright
+    # Pre-navigate to URL using Playwright (async)
     print(f"Pre-navigating to URL with Playwright: {url}")
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"]
+                args=[
+                    "--no-sandbox", 
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ]
             )
-            page = browser.new_page()
+            page = await browser.new_page()
+            
+            # Set additional headers
+            await page.set_extra_http_headers({
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            })
             
             # Load cookies if available
             if use_cookies and os.path.exists(cookies):
                 try:
-                    # Try to load cookies as Playwright format (JSON)
                     with open(cookies, 'r') as f:
                         if cookies.endswith('.json'):
                             cookies_data = json.load(f)
-                            page.context.add_cookies(cookies_data)
+                            await page.context.add_cookies(cookies_data)
                         else:
                             print("Note: Netscape cookies format detected, will be used by yt-dlp directly")
                 except Exception as e:
                     print(f"Warning: Could not load cookies for Playwright: {e}")
             
             # Navigate to the YouTube URL
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page_title = await page.title()
+                print(f"Successfully navigated to: {page_title}")
+                await page.wait_for_timeout(2000)
+            except Exception as nav_error:
+                print(f"Navigation error: {nav_error}")
             
-            # Get page title to verify successful navigation
-            page_title = page.title()
-            print(f"Successfully navigated to: {page_title}")
-            
-            # Wait a moment to ensure page is fully loaded
-            page.wait_for_timeout(2000)
-            
-            browser.close()
+            await browser.close()
             
     except Exception as e:
         print(f"Warning: Playwright navigation failed: {e}")
@@ -84,14 +94,23 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
     metadata_cmd = ["yt-dlp", "--dump-json", url]
     if use_cookies:
         metadata_cmd.extend(["--cookies", cookies])
+    else:
+        metadata_cmd.extend(["--cookies-from-browser", "chrome"])
     
     print(f"Fetching metadata for: {url}")
     try:
-        result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
         
         if result.returncode != 0:
             print(f"Error fetching metadata: {result.stderr}")
-            return None, None
+            # Try with Firefox cookies if Chrome failed
+            if not use_cookies:
+                metadata_cmd[-1] = "firefox"
+                result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode != 0:
+                    return None, None
+            else:
+                return None, None
             
         if not result.stdout.strip():
             print("Error: No metadata returned from yt-dlp")
@@ -105,7 +124,7 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
         return None, None
     except json.JSONDecodeError as e:
         print(f"Error parsing metadata JSON: {e}")
-        print(f"Raw output: {result.stdout[:200]}...")  # Show first 200 chars
+        print(f"Raw output: {result.stdout[:200]}...")
         print(f"Error output: {result.stderr}")
         return None, None
     except Exception as e:
@@ -139,12 +158,14 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
     download_cmd = [
         "yt-dlp",
         "-f", "best[ext=mp4]/best",
-        "-o", f"{output_path}/%(title).100s.%(ext)s",  # Limit title length
+        "-o", f"{output_path}/%(title).100s.%(ext)s",
         url
     ]
     
     if use_cookies:
         download_cmd.extend(["--cookies", cookies])
+    else:
+        download_cmd.extend(["--cookies-from-browser", "chrome"])
 
     print(f"Downloading video: {url}")
     try:
@@ -152,7 +173,14 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
         
         if download_result.returncode != 0:
             print(f"Error downloading video: {download_result.stderr}")
-            return None, metadata
+            # Try with Firefox cookies
+            if not use_cookies:
+                download_cmd[-1] = "firefox"
+                download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
+                if download_result.returncode != 0:
+                    return None, metadata
+            else:
+                return None, metadata
             
         print("Download completed successfully!")
         
@@ -167,6 +195,7 @@ def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: 
     except Exception as e:
         print(f"Unexpected error during download: {e}")
         return None, metadata
+
 
 def find_downloaded_file(output_path: str, safe_title: str, video_id: str) -> Optional[str]:
     """Find the downloaded file in the output directory"""

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 import re
 
+import asyncio
 # Load environment variables
 load_dotenv()
 
@@ -53,7 +54,7 @@ class RecipeExtractionController:
             # Step 1: Download the video
             print("Downloading video...")
             if "youtube.com/" in request.url or "youtu.be/" in request.url:
-                video_file, metadata = download_youtube_video(request.url)
+                video_file, metadata =asyncio.run(download_youtube_video(request.url))
             elif "instagram.com/" in request.url or "instagr.am/" in request.url:
                 video_file, metadata = download_instagram_video(request.url)
             else:
