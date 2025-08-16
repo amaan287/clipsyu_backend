@@ -17,7 +17,7 @@ import numpy as np
 import subprocess
 import json
 from typing import Optional, Tuple, Dict
-from playwright.sync_api import async_playwright
+from playwright.async_api import async_playwright
 
 # Load environment variables
 load_dotenv()
