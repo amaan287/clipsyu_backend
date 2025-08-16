@@ -24,7 +24,7 @@ gemini_api_key = os.getenv("GEMINI_APIKEY")
 # Configure Gemini API
 genai.configure(api_key=gemini_api_key)
 
-def download_youtube_video(url: str, cookies: str = "../../cookies.txt", output_path: str = "./downloads"):
+def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads"):
     """Download YouTube video using yt-dlp CLI and extract metadata"""
     
     # Create output directory if it doesn't exist
@@ -75,6 +75,7 @@ def download_youtube_video(url: str, cookies: str = "../../cookies.txt", output_
     subprocess.run(download_cmd)
 
     return downloaded_file, metadata
+
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
     regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"
