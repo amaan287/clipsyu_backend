@@ -7,8 +7,6 @@ import json
 from pathlib import Path
 from datetime import datetime
 import time
-import cv2
-import pytesseract
 from PIL import Image
 import numpy as np
 import requests

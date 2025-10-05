@@ -32,7 +32,6 @@ def verify_jwt_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
 async def verify_google_token(token: str) -> dict:
     """Verify Google ID token"""
     try:
