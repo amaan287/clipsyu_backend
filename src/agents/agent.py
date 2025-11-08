@@ -4,8 +4,6 @@ import re
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
 import os
-import re
-import google.generativeai as genai
 import json
 from pathlib import Path
 from datetime import datetime
@@ -14,33 +12,25 @@ import cv2
 import pytesseract
 from PIL import Image
 import numpy as np
-import subprocess
-import json
+import tempfile
 from typing import Optional, Tuple, Dict
 from playwright.async_api import async_playwright
+import io
+import aiohttp
+import httpx
 
 # Load environment variables
 load_dotenv()
-google_cloud_api_key = os.getenv("GOOGLE_CLOUD_API_KEY")
-gemini_api_key = os.getenv("GEMINI_APIKEY")
-
-# Configure Gemini API
-genai.configure(api_key=gemini_api_key)
+openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
 
 
-async def download_youtube_video(url: str, cookies: str = "cookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
-    """Download YouTube video using yt-dlp CLI with Playwright pre-navigation and extract metadata"""
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_path, exist_ok=True)
-
+async def download_youtube_video(url: str, cookies: str = "cookies.txt") -> Tuple[Optional[bytes], Optional[Dict]]:
     # Check if cookies file exists
     if not os.path.exists(cookies):
         print(f"Warning: Cookies file '{cookies}' not found. Proceeding without cookies.")
         use_cookies = False
     else:
         use_cookies = True
-
     # Pre-navigate to URL using Playwright (async)
     print(f"Pre-navigating to URL with Playwright: {url}")
     try:
@@ -88,137 +78,81 @@ async def download_youtube_video(url: str, cookies: str = "cookies.txt", output_
             
     except Exception as e:
         print(f"Warning: Playwright navigation failed: {e}")
-        print("Proceeding with direct yt-dlp download...")
+        print("Proceeding with direct yt-dlp...")
 
-    # Command to get metadata in JSON
-    metadata_cmd = ["yt-dlp", "--dump-json", url]
+    # Use yt-dlp to get video metadata and direct URL
+    ydl_opts = {
+        'skip_download': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
     if use_cookies:
-        metadata_cmd.extend(["--cookies", cookies])
-    else:
-        metadata_cmd.extend(["--cookies-from-browser", "chrome"])
+        ydl_opts['cookiefile'] = cookies
     
-    print(f"Fetching metadata for: {url}")
+    print(f"Extracting video info for: {url}")
     try:
-        result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
-        
-        if result.returncode != 0:
-            print(f"Error fetching metadata: {result.stderr}")
-            # Try with Firefox cookies if Chrome failed
-            if not use_cookies:
-                metadata_cmd[-1] = "firefox"
-                result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode != 0:
-                    return None, None
-            else:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if not info:
+                print("Error: No info returned from yt-dlp")
                 return None, None
             
-        if not result.stdout.strip():
-            print("Error: No metadata returned from yt-dlp")
-            return None, None
+            # Extract metadata
+            metadata = {
+                "title": info.get("title", "Unknown Title"),
+                "description": info.get("description", ""),
+                "channel": info.get("channel", ""),
+                "uploader": info.get("uploader", ""),
+                "uploader_url": info.get("uploader_url", ""),
+                "upload_date": info.get("upload_date", ""),
+                "duration": info.get("duration", 0),
+                "view_count": info.get("view_count", 0),
+                "like_count": info.get("like_count", 0),
+                "webpage_url": info.get("webpage_url", url),
+                "id": info.get("id", ""),
+            }
             
-        # Parse JSON metadata
-        info = json.loads(result.stdout)
-        
-    except subprocess.TimeoutExpired:
-        print("Error: Metadata fetch timed out")
-        return None, None
-    except json.JSONDecodeError as e:
-        print(f"Error parsing metadata JSON: {e}")
-        print(f"Raw output: {result.stdout[:200]}...")
-        print(f"Error output: {result.stderr}")
-        return None, None
-    except Exception as e:
-        print(f"Unexpected error during metadata fetch: {e}")
-        return None, None
-
-    # Extract metadata safely
-    metadata = {
-        "title": info.get("title", "Unknown Title"),
-        "description": info.get("description", ""),
-        "channel": info.get("channel", ""),
-        "uploader": info.get("uploader", ""),
-        "uploader_url": info.get("uploader_url", ""),
-        "upload_date": info.get("upload_date", ""),
-        "duration": info.get("duration", 0),
-        "view_count": info.get("view_count", 0),
-        "like_count": info.get("like_count", 0),
-        "webpage_url": info.get("webpage_url", url),
-        "id": info.get("id", ""),
-    }
-
-    print("--- Video Metadata ---")
-    for key, value in metadata.items():
-        print(f"{key}: {value}")
-
-    # Clean filename for download
-    safe_title = re.sub(r'[<>:"/\\|?*]', '', metadata["title"])
-    safe_title = safe_title[:100]  # Limit length to avoid filesystem issues
-    
-    # Command to download video
-    download_cmd = [
-        "yt-dlp",
-        "-f", "best[ext=mp4]/best",
-        "-o", f"{output_path}/%(title).100s.%(ext)s",
-        url
-    ]
-    
-    if use_cookies:
-        download_cmd.extend(["--cookies", cookies])
-    else:
-        download_cmd.extend(["--cookies-from-browser", "chrome"])
-
-    print(f"Downloading video: {url}")
-    try:
-        download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
-        
-        if download_result.returncode != 0:
-            print(f"Error downloading video: {download_result.stderr}")
-            # Try with Firefox cookies
-            if not use_cookies:
-                download_cmd[-1] = "firefox"
-                download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
-                if download_result.returncode != 0:
-                    return None, metadata
-            else:
+            print("--- Video Metadata ---")
+            for key, value in metadata.items():
+                print(f"{key}: {value}")
+            
+            # Get direct video URL - prefer mp4 format
+            video_url = None
+            for f in info.get('formats', []):
+                if f.get('ext') == 'mp4' and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                    video_url = f['url']
+                    break
+            
+            # Fallback to best format
+            if not video_url and 'url' in info:
+                video_url = info['url']
+            elif not video_url and info.get('formats'):
+                # Get best format URL
+                video_url = info['formats'][-1].get('url')
+            
+            if not video_url:
+                print("Error: Could not extract direct video URL")
                 return None, metadata
             
-        print("Download completed successfully!")
-        
-        # Find the downloaded file
-        downloaded_file = find_downloaded_file(output_path, safe_title, metadata["id"])
-        
-        return downloaded_file, metadata
-        
-    except subprocess.TimeoutExpired:
-        print("Error: Video download timed out")
-        return None, metadata
+            print(f"📥 Downloading video from direct URL...")
+            
+            # Download video as bytes using aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(video_url) as response:
+                    print(f"📊 Response status: {response.status}")
+                    
+                    if response.status != 200:
+                        raise Exception(f"Failed to download video: {response.status}")
+                    
+                    video_bytes = await response.read()
+                    print(f"📦 Downloaded {len(video_bytes)} bytes")
+                    
+                    return video_bytes, metadata
+                    
     except Exception as e:
-        print(f"Unexpected error during download: {e}")
-        return None, metadata
-
-
-def find_downloaded_file(output_path: str, safe_title: str, video_id: str) -> Optional[str]:
-    """Find the downloaded file in the output directory"""
-    
-    # Common video extensions
-    extensions = ['.mp4', '.webm', '.mkv', '.avi']
-    
-    # Try to find file by title
-    for ext in extensions:
-        potential_file = os.path.join(output_path, f"{safe_title}{ext}")
-        if os.path.exists(potential_file):
-            return potential_file
-    
-    # If not found by title, search all files in directory
-    if os.path.exists(output_path):
-        for filename in os.listdir(output_path):
-            if video_id in filename or safe_title in filename:
-                full_path = os.path.join(output_path, filename)
-                if os.path.isfile(full_path):
-                    return full_path
-    
-    print(f"Warning: Could not locate downloaded file in {output_path}")
-    return None
+        print(f"Error during YouTube video download: {e}")
+        return None, None
 
 def get_video_id_from_url(url):
     """Extracts the YouTube video ID from a URL."""
@@ -278,11 +212,12 @@ def preprocess_image_for_ocr(image):
     
     return cleaned
 
-def extract_text_from_video_frames(video_path, trigger_keywords, frame_interval=30):
-    """Extract text from video frames using OCR when trigger keywords are detected"""
-    print(f"Starting OCR text extraction from video: {video_path}")
+def extract_text_from_video_frames(video_bytes, trigger_keywords, frame_interval=30):
+    """
+    Extract text from video frames using OCR from video bytes
+    """
+    print(f"Starting OCR text extraction from video bytes: {len(video_bytes) if isinstance(video_bytes, bytes) else 'unknown'}")
     
-    # OCR trigger keywords (case-insensitive)
     ocr_keywords = [
         'on screen', 'text', 'written', 'list', 'shown',
         'display', 'appears', 'visible', 'read', 'see', 'shows', 'measurement',
@@ -290,7 +225,6 @@ def extract_text_from_video_frames(video_path, trigger_keywords, frame_interval=
         'ounce', 'liter', 'milliliter', 'instructions', 'steps', 'directions'
     ]
     
-    # Check if any trigger keywords are found
     transcription_lower = trigger_keywords.lower()
     keywords_found = [keyword for keyword in ocr_keywords if keyword in transcription_lower]
     
@@ -300,115 +234,203 @@ def extract_text_from_video_frames(video_path, trigger_keywords, frame_interval=
     
     print(f"OCR trigger keywords found: {keywords_found}")
     
-    # Initialize video capture
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video file {video_path}")
-        return ""
+    if not isinstance(video_bytes, bytes):
+        return f"Error: Expected bytes, got {type(video_bytes)}"
     
-    # Get video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    print(f"Video FPS: {fps}, Total frames: {total_frames}")
-    
-    extracted_text = []
-    frame_count = 0
-    processed_frames = 0
-    
-    # Configure Tesseract for better accuracy
-    custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()-/: '
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        # Convert bytes to numpy array for OpenCV
+        nparr = np.frombuffer(video_bytes, np.uint8)
         
-        # Process every nth frame based on frame_interval
-        if frame_count % frame_interval == 0:
-            try:
-                # Preprocess image for better OCR
-                processed_frame = preprocess_image_for_ocr(frame)
-                
-                # Convert to PIL Image
-                pil_image = Image.fromarray(processed_frame)
-                
-                # Extract text using Tesseract
-                text = pytesseract.image_to_string(pil_image, config=custom_config)
-                
-                if text.strip():  # Only add non-empty text
-                    # Clean and filter the text
-                    cleaned_text = text.strip().replace('\n', ' ').replace('\r', ' ')
+        # Create a temporary file for OpenCV (OpenCV doesn't support direct bytes for video)
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+            tmp.write(video_bytes)
+            temp_path = tmp.name
+        
+        # Open video with OpenCV
+        cap = cv2.VideoCapture(temp_path)
+        
+        if not cap.isOpened():
+            print(f"Error: Could not open video from bytes for OCR")
+            os.remove(temp_path)
+            return ""
+        
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"Video FPS: {fps}, Total frames: {total_frames}")
+        
+        extracted_text = []
+        frame_count = 0
+        processed_frames = 0
+        
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,()-/: '
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_count % frame_interval == 0:
+                try:
+                    processed_frame = preprocess_image_for_ocr(frame)
+                    pil_image = Image.fromarray(processed_frame)
+                    text = pytesseract.image_to_string(pil_image, config=custom_config)
                     
-                    # Filter out very short or nonsensical text
-                    if len(cleaned_text) > 3:
-                        timestamp = frame_count / fps
-                        extracted_text.append({
-                            "timestamp": f"{int(timestamp // 60)}:{int(timestamp % 60):02d}",
-                            "frame": frame_count,
-                            "text": cleaned_text
-                        })
-                        print(f"Frame {frame_count} ({timestamp:.1f}s): {cleaned_text[:100]}...")
-                
-                processed_frames += 1
-                
-            except Exception as e:
-                print(f"Error processing frame {frame_count}: {e}")
+                    if text.strip():
+                        cleaned_text = text.strip().replace('\n', ' ').replace('\r', ' ')
+                        if len(cleaned_text) > 3:
+                            timestamp = frame_count / fps
+                            extracted_text.append({
+                                "timestamp": f"{int(timestamp // 60)}:{int(timestamp % 60):02d}",
+                                "frame": frame_count,
+                                "text": cleaned_text
+                            })
+                            print(f"Frame {frame_count} ({timestamp:.1f}s): {cleaned_text[:100]}...")
+                    
+                    processed_frames += 1
+                    
+                except Exception as e:
+                    print(f"Error processing frame {frame_count}: {e}")
+            
+            frame_count += 1
+            
+            if processed_frames >= 100:
+                print("Reached maximum frame processing limit")
+                break
         
-        frame_count += 1
+        cap.release()
         
-        # Limit processing to avoid excessive computation
-        if processed_frames >= 100:  # Process max 100 frames
-            print("Reached maximum frame processing limit")
-            break
-    
-    cap.release()
-    
-    # Combine all extracted text
-    if extracted_text:
-        combined_text = "\n".join([f"[{item['timestamp']}] {item['text']}" for item in extracted_text])
-        print(f"OCR extraction completed. Extracted text from {len(extracted_text)} frames.")
-        return combined_text
-    else:
-        print("No text extracted from video frames.")
+        # Cleanup temp file
+        try:
+            os.remove(temp_path)
+        except Exception as e:
+            print(f"Warning: Could not remove temp file: {e}")
+        
+        if extracted_text:
+            combined_text = "\n".join([f"[{item['timestamp']}] {item['text']}" for item in extracted_text])
+            print(f"OCR extraction completed. Extracted text from {len(extracted_text)} frames.")
+            return combined_text
+        else:
+            print("No text extracted from video frames.")
+            return ""
+            
+    except Exception as e:
+        print(f"Error in extract_text_from_video_frames: {e}")
         return ""
 
-def transcribe_video_with_gemini(video_file_path):
+async def transcribe_video_with_openai(video_bytes: bytes) -> str:
     """
-    Transcribe video file using Google Gemini API
+    Transcribe video bytes using OpenAI Whisper API
+    Extracts audio from video first to ensure compatibility with Whisper API.
+    Returns empty string if video has no audio track.
     """
+    import tempfile
+    import subprocess
+    
+    url = "https://api.openai.com/v1/audio/transcriptions"
+    temp_video = None
+    temp_audio = None
+    
     try:
-        print(f"Transcribing video: {video_file_path}")
+        print(f"Transcribing video with OpenAI Whisper (bytes: {len(video_bytes) if isinstance(video_bytes, bytes) else 'unknown'})")
         
-        # Check if file exists
-        if not os.path.exists(video_file_path):
-            return f"Error: Video file not found at {video_file_path}"
+        if not isinstance(video_bytes, bytes):
+            return f"Error: Expected bytes, got {type(video_bytes)}"
         
-        # Upload the video file
-        print("Uploading video file to Gemini...")
-        video_file = genai.upload_file(video_file_path)
+        # Create temporary video file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
+            tmp_video.write(video_bytes)
+            temp_video = tmp_video.name
         
-        # Wait for processing
-        print("Processing video...")
+        # First, check if video has audio stream
+        print("Checking for audio stream in video...")
+        probe_result = subprocess.run(
+            ['ffmpeg', '-i', temp_video, '-hide_banner'],
+            capture_output=True,
+            text=True
+        )
         
-        # Create the model
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        # Check if there's an audio stream in the ffmpeg output
+        has_audio = 'Stream #' in probe_result.stderr and 'Audio:' in probe_result.stderr
         
-        # Generate transcription and analysis
-        response = model.generate_content([
-            video_file,
-            "Please analyze this video and provide: 1) Complete transcription of all speech, 2) Description of cooking activities, objects, and ingredients visible, 3) Any text that appears on screen, 4) Cooking techniques and equipment used. Format as a detailed analysis."
-        ])
+        if not has_audio:
+            print("⚠️ Video has no audio track. Skipping transcription.")
+            return ""  # Return empty transcription
         
-        return response.text
+        # Create temporary audio file path
+        temp_audio = tempfile.mktemp(suffix='.m4a')
+        
+        # Extract audio using ffmpeg
+        print("Extracting audio from video for Whisper API...")
+        result = subprocess.run(
+            ['ffmpeg', '-i', temp_video, '-vn', '-acodec', 'aac', '-ar', '16000', '-ac', '1', '-y', temp_audio],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            # Check if error is due to no audio stream
+            if 'does not contain any stream' in result.stderr or 'Output file #0 does not contain any stream' in result.stderr:
+                print("⚠️ Video has no audio stream. Skipping transcription.")
+                return ""  # Return empty transcription
+            return f"Audio extraction failed: {result.stderr}"
+        
+        # Check if audio file was created and has content
+        if not os.path.exists(temp_audio) or os.path.getsize(temp_audio) == 0:
+            print("⚠️ No audio could be extracted. Skipping transcription.")
+            return ""
+        
+        # Read extracted audio
+        with open(temp_audio, 'rb') as audio_file:
+            audio_bytes = audio_file.read()
+        
+        print(f"Audio extracted: {len(audio_bytes)} bytes")
+        
+        # Create in-memory file-like object from audio bytes
+        audio_buffer = io.BytesIO(audio_bytes)
+        audio_buffer.seek(0)  # Reset to beginning
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            # Send as M4A audio format
+            files = {"file": ("audio.m4a", audio_buffer, "audio/m4a")}
+            data = {"model": "whisper-1"}
+            headers = {"Authorization": f"Bearer {openai_api_key}"}
+            response = await client.post(url, files=files, data=data, headers=headers)
+            
+            if response.status_code != 200:
+                return f"OpenAI Whisper API error (status {response.status_code}): {response.text}"
+            
+            resp_json = response.json()
+            transcription = resp_json.get("text", "")
+            print(f"✅ Transcription completed: {len(transcription)} characters")
+            return transcription
         
     except Exception as e:
+        print(f"Error during video transcription: {str(e)}")
         return f"Error during video transcription: {str(e)}"
+    finally:
+        # Clean up temporary files
+        if temp_video and os.path.exists(temp_video):
+            try:
+                os.remove(temp_video)
+            except Exception as e:
+                print(f"Warning: Could not remove temp video file: {e}")
+        if temp_audio and os.path.exists(temp_audio):
+            try:
+                os.remove(temp_audio)
+            except Exception as e:
+                print(f"Warning: Could not remove temp audio file: {e}")
 
-def extract_recipe_with_ai(metadata, comment_info=None, video_analysis="", ocr_text=""):
-    """Use AI to extract recipe information from video content and analysis"""
+async def extract_recipe_with_ai(metadata, comment_info=None, video_analysis="", ocr_text=""):
+    """Use AI to extract recipe/guide information from video content and analysis using GPT-4o"""
     try:
-        print("Analyzing content to extract recipe...")
+        print("Analyzing content to extract recipe/guide with OpenAI GPT-4o...")
+        
+        # Early warning if no transcription data
+        transcription_text = str(video_analysis) if video_analysis else ''
+        if not transcription_text or len(transcription_text) < 50:
+            print("⚠️  WARNING: Transcription is empty or very short. AI may not be able to extract meaningful content.")
+            print(f"Transcription length: {len(transcription_text)} characters")
         
         # Prepare the content for AI analysis
         video_title = metadata.get('title', '')
@@ -425,184 +447,138 @@ def extract_recipe_with_ai(metadata, comment_info=None, video_analysis="", ocr_t
         transcription = str(video_analysis) if video_analysis else ''
         
         # Prepare OCR text data
-        ocr_section = f"\n\nOCR EXTRACTED TEXT FROM VIDEO FRAMES:\n{ocr_text}" if ocr_text else ""
+        ocr_section = f"\n\nOCR TEXT: {ocr_text}" if ocr_text else ""
         
-        # Create the enhanced prompt for recipe extraction
-        prompt = f"""
-        You are a recipe extraction AI. Analyze the following comprehensive content from a YouTube video and extract a recipe if one exists.
+        # Add note about using description when transcription is empty
+        transcription_note = ""
+        if not transcription or len(transcription) < 50:
+            if video_description:
+                transcription_note = "\n⚠️ NOTE: Video has no/minimal audio transcription. Extract information primarily from DESCRIPTION.\n"
+            else:
+                transcription_note = "\n⚠️ NOTE: Video has no/minimal audio transcription and no description. Limited data available.\n"
         
-        VIDEO TITLE: {video_title}
+        # Create the enhanced prompt for recipe/guide extraction
+        prompt = f"""Analyze this video and extract a step-by-step guide in JSON format.
+{transcription_note}
+TITLE: {video_title}
+DESCRIPTION: {video_description}
+CHANNEL: {channel_name}
+COMMENT: {first_comment}
+TRANSCRIPTION: {transcription}{ocr_section}
+
+Extract the guide with this structure:
+{{
+  "title": "guide name",
+  "description": "brief overview",
+  "content_type": "recipe|tutorial|how-to|programming|educational|general",
+  "materials": [{{"name": "item", "quantity": "amount", "notes": "notes", "optional": false}}],
+  "steps": [{{"step": 1, "instruction": "description", "duration": "time", "details": "extras", "code_snippet": "code", "tips": ["tips"]}}],
+  "metadata": {{"duration": "", "difficulty": "easy|medium|hard", "category": "", "tags": [], "estimated_time": "", "skill_level": "beginner|intermediate|advanced", "language": "", "framework": ""}},
+  "tools": ["tools/equipment"],
+  "tips": ["general tips"],
+  "prerequisites": ["requirements"],
+  "isInstructional": true
+}}
+
+CRITICAL INSTRUCTIONS:
+- ONLY extract information that is EXPLICITLY present in the DESCRIPTION, TRANSCRIPTION, COMMENT, or OCR TEXT
+- PRIORITIZE: If TRANSCRIPTION is empty/minimal, use DESCRIPTION as primary source (many videos have full details in description)
+- DO NOT make up, infer, or assume any steps, ingredients, or instructions that are not clearly stated
+- If TRANSCRIPTION is empty AND DESCRIPTION is empty, set "isInstructional": false and return minimal structure
+- Set "isInstructional": true when you can extract clear, specific step-by-step instructions from description OR transcription
+- For recipes: extract ingredients from description, transcription, comments, or OCR text
+- For tutorials: extract steps from description, transcription, comments, or OCR text
+- Use OCR text for precise measurements, code, or commands when available
+- Return only valid JSON
+
+Extract now:
+"""
         
-        VIDEO DESCRIPTION: {video_description}
-        
-        CHANNEL NAME: {channel_name}
-        
-        FIRST COMMENT: {first_comment}
-        
-        VIDEO TRANSCRIPTION AND ANALYSIS: {transcription}
-        {ocr_section}
-        
-        IMPORTANT: Pay special attention to the OCR extracted text as it may contain precise ingredient measurements, quantities, and recipe details that appear on screen. Use this information to create accurate ingredient lists and measurements.
-        
-        Based on this comprehensive analysis, extract the recipe information and return it in the following JSON format:
-        {{
-            "title": "recipe name",
-            "description": "brief description of the recipe",
-            "ingredients": [
-                {{"name": "ingredient name", "quantity": "amount with unit", "notes": "any special notes"}},
-                {{"name": "ingredient name", "quantity": "amount with unit", "notes": "any special notes"}}
+        # Call OpenAI GPT-4o with JSON response format
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are an expert content analyzer that extracts step-by-step guides from instructional videos. You MUST ONLY extract information explicitly present in the provided transcription. NEVER make up, infer, or hallucinate content. If there is insufficient information, return a minimal structure with isInstructional set to false. Return valid JSON only."},
+                {"role": "user", "content": prompt},
             ],
-            "steps": [
-                {{"step": 1, "instruction": "detailed step description", "time": "estimated time", "temperature": "if applicable"}},
-                {{"step": 2, "instruction": "detailed step description", "time": "estimated time", "temperature": "if applicable"}}
-            ],
-            "metadata": {{
-                "servings": "number of servings",
-                "prep_time": "preparation time",
-                "cook_time": "cooking time",
-                "total_time": "total time",
-                "difficulty": "easy/medium/hard",
-                "cuisine": "type of cuisine",
-                "dietary_tags": ["vegetarian", "gluten-free", etc.]
-            }},
-            "equipment": ["list of required equipment"],
-            "tips": ["cooking tips and notes"],
-            "ocrExtractedInfo": "{bool(ocr_text)}",
-            "channelName": "channel name",
-            "savedDate": "{datetime.now().isoformat()}",
-            "isRecipe": true
-        }}
+            "temperature": 0.3,
+            "max_tokens": 1200,
+            "response_format": {"type": "json_object"},
+        }
         
-        Rules:
-        1. If this is clearly a recipe/cooking video, extract the complete recipe with all details
-        2. If this is not a recipe video, return the same JSON structure but with "isRecipe": false and empty arrays
-        3. Be precise with ingredient quantities and measurements, especially from OCR text
-        4. Break down steps clearly and sequentially based on the video content
-        5. Include cooking times and temperatures when mentioned
-        6. Add relevant dietary tags based on the content
-        7. Prioritize OCR extracted text for ingredient measurements and quantities
-        8. Only return the JSON, no additional text
-        
-        Extract the recipe now:
-        """
-        
-        # Create the model
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        
-        # Generate recipe extraction
-        response = model.generate_content(prompt)
-        
-        # Try to parse the JSON response
-        try:
-            # Clean the response text
-            response_text = response.text.strip()
-            if response_text.startswith('```json'):
-                response_text = response_text[7:-3]
-            elif response_text.startswith('```'):
-                response_text = response_text[3:-3]
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(url, headers=headers, content=json.dumps(payload))
             
-            recipe_data = json.loads(response_text)
+            if response.status_code != 200:
+                raise Exception(f"OpenAI GPT-4o API error (status {response.status_code}): {response.text}")
+            
+            resp_json = response.json()
+            choices = resp_json.get('choices', [])
+            if not choices:
+                raise Exception("No choices in OpenAI chat response")
+            
+            content = choices[0]["message"].get("content", "")
+            
+            # Clean and parse JSON response
+            text = content.strip()
+            if text.startswith('```json'):
+                text = text[7:]
+            if text.endswith('```'):
+                text = text[:-3]
+            elif text.startswith('```'):
+                text = text[3:]
+                if text.endswith('```'):
+                    text = text[:-3]
+            
+            recipe_data = json.loads(text)
             
             # Ensure all required fields are present
             recipe_data.setdefault('title', video_title)
             recipe_data.setdefault('channelName', channel_name)
             recipe_data.setdefault('savedDate', datetime.now().isoformat())
-            recipe_data.setdefault('ingredients', [])
+            recipe_data.setdefault('materials', [])
             recipe_data.setdefault('steps', [])
-            recipe_data.setdefault('isRecipe', False)
+            recipe_data.setdefault('isInstructional', False)
             recipe_data.setdefault('ocrExtractedInfo', bool(ocr_text))
             
+            print(f"✅ Guide extraction completed: {recipe_data.get('title', 'Unknown')}")
             return recipe_data
             
-        except json.JSONDecodeError as e:
-            print(f"Error parsing AI response as JSON: {e}")
-            print(f"Raw response: {response.text}")
-            
-            # Return a fallback structure
-            return {
-                "title": video_title,
-                "description": "",
-                "ingredients": [],
-                "steps": [],
-                "metadata": {},
-                "equipment": [],
-                "tips": [],
-                "channelName": channel_name,
-                "savedDate": datetime.now().isoformat(),
-                "isRecipe": False,
-                "ocrExtractedInfo": bool(ocr_text),
-                "error": "Could not parse recipe from AI response"
-            }
-        
-    except Exception as e:
-        print(f"Error during recipe extraction: {str(e)}")
+    except json.JSONDecodeError as e:
+        print(f"Error parsing AI response as JSON: {e}")
         return {
             "title": metadata.get('title', 'Unknown'),
             "description": "",
-            "ingredients": [],
+            "materials": [],
             "steps": [],
             "metadata": {},
-            "equipment": [],
+            "tools": [],
             "tips": [],
             "channelName": metadata.get('channel', 'Unknown'),
             "savedDate": datetime.now().isoformat(),
-            "isRecipe": False,
+            "isInstructional": False,
             "ocrExtractedInfo": bool(ocr_text),
-            "error": f"Recipe extraction failed: {str(e)}"
+            "error": "Could not parse guide from AI response"
         }
-
-def print_recipe(recipe_data):
-    """Print the recipe in a formatted way"""
-    print("\n" + "="*50)
-    print("EXTRACTED RECIPE")
-    print("="*50)
-    
-    if recipe_data.get('isRecipe', False):
-        print(f"Title: {recipe_data.get('title', 'N/A')}")
-        print(f"Channel: {recipe_data.get('channelName', 'N/A')}")
-        print(f"Description: {recipe_data.get('description', 'N/A')}")
-        print(f"OCR Text Used: {recipe_data.get('ocrExtractedInfo', False)}")
-        
-        metadata = recipe_data.get('metadata', {})
-        if metadata:
-            print("\nMetadata:")
-            for key, value in metadata.items():
-                print(f"  {key}: {value}")
-        
-        ingredients = recipe_data.get('ingredients', [])
-        if ingredients:
-            print("\nIngredients:")
-            for i, ingredient in enumerate(ingredients, 1):
-                print(f"  {i}. {ingredient.get('quantity', '')} {ingredient.get('name', '')}")
-                if ingredient.get('notes'):
-                    print(f"     Notes: {ingredient['notes']}")
-        
-        steps = recipe_data.get('steps', [])
-        if steps:
-            print("\nSteps:")
-            for step in steps:
-                print(f"  {step.get('step', '')}. {step.get('instruction', '')}")
-                if step.get('time'):
-                    print(f"     Time: {step['time']}")
-                if step.get('temperature'):
-                    print(f"     Temperature: {step['temperature']}")
-        
-        equipment = recipe_data.get('equipment', [])
-        if equipment:
-            print(f"\nEquipment: {', '.join(equipment)}")
-        
-        tips = recipe_data.get('tips', [])
-        if tips:
-            print("\nTips:")
-            for tip in tips:
-                print(f"  • {tip}")
-    else:
-        print("This video does not appear to contain a recipe.")
-        print(f"Title: {recipe_data.get('title', 'N/A')}")
-        print(f"Channel: {recipe_data.get('channelName', 'N/A')}")
-        print(f"OCR Text Used: {recipe_data.get('ocrExtractedInfo', False)}")
-    
-    print("\nFull JSON:")
-    print(json.dumps(recipe_data, indent=2, ensure_ascii=False))
-    print("="*50)
+    except Exception as e:
+        print(f"Error during guide extraction: {str(e)}")
+        return {
+            "title": metadata.get('title', 'Unknown'),
+            "description": "",
+            "materials": [],
+            "steps": [],
+            "metadata": {},
+            "tools": [],
+            "tips": [],
+            "channelName": metadata.get('channel', 'Unknown'),
+            "savedDate": datetime.now().isoformat(),
+            "isInstructional": False,
+            "ocrExtractedInfo": bool(ocr_text),
+            "error": f"Guide extraction failed: {str(e)}"
+        }
 

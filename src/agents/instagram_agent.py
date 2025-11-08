@@ -1,26 +1,17 @@
-import yt_dlp
 import re
 from dotenv import load_dotenv
 import os
-import google.generativeai as genai
 import json
-from pathlib import Path
 from datetime import datetime
-import time
-from PIL import Image
-import numpy as np
-import requests
-from urllib.parse import urlparse
-import subprocess
+from typing import Optional, Dict, Tuple, Any
+import httpx
+import io
 
-from typing import Optional, Dict, Tuple
-from playwright.async_api import async_playwright
+from src.service.video_downloader import get_instagram_video_url_and_metadata, download_video
+
 # Load environment variables
 load_dotenv()
-gemini_api_key = os.getenv("GEMINI_APIKEY")
-
-# Configure Gemini API
-genai.configure(api_key=gemini_api_key)
+openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
 
 def extract_instagram_url_info(url):
     """Extract Instagram post/reel ID and type from URL"""
@@ -45,265 +36,54 @@ def extract_instagram_url_info(url):
     
     return None, None
 
-async def download_instagram_video(url: str, cookies: str = "instagramcookies.txt", output_path: str = "./downloads") -> Tuple[Optional[str], Optional[Dict]]:
-    """Download Instagram video using yt-dlp CLI with Playwright pre-navigation and extract metadata"""
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_path, exist_ok=True)
-
-    # Check if cookies file exists
-    if not os.path.exists(cookies):
-        print(f"Warning: Cookies file '{cookies}' not found. Proceeding without cookies.")
-        use_cookies = False
-    else:
-        use_cookies = True
-
-    # Pre-navigate to URL using Playwright (async)
-    print(f"Pre-navigating to Instagram URL with Playwright: {url}")
+async def download_instagram_video_bytes(url: str, cookies_file: Optional[str] = None) -> Tuple[Optional[io.BytesIO], Optional[Dict]]:
+    """
+    Download Instagram video as bytes using video_downloader utilities.
+    Returns: (BytesIO(video_data), metadata_dict)
+    """
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox", 
-                    "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--user-agent=Chrome/120.0.0.0"
-                ]
-            )
-            page = await browser.new_page()
-            
-            # Set additional headers
-            await page.set_extra_http_headers({
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            })
-            
-            # Load cookies if available
-            if use_cookies and os.path.exists(cookies):
-                try:
-                    with open(cookies, 'r') as f:
-                        if cookies.endswith('.json'):
-                            cookies_data = json.load(f)
-                            await page.context.add_cookies(cookies_data)
-                        else:
-                            print("Note: Netscape cookies format detected, will be used by yt-dlp directly")
-                except Exception as e:
-                    print(f"Warning: Could not load cookies for Playwright: {e}")
-            
-            # Navigate to the Instagram URL
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page_title = await page.title()
-                print(f"Successfully navigated to: {page_title}")
-                await page.wait_for_timeout(3000)  # Wait a bit longer for Instagram
-            except Exception as nav_error:
-                print(f"Navigation error: {nav_error}")
-            
-            await browser.close()
-            
-    except Exception as e:
-        print(f"Warning: Playwright navigation failed: {e}")
-        print("Proceeding with direct yt-dlp download...")
-
-    # Command to get metadata in JSON
-    metadata_cmd = ["yt-dlp", "--dump-json", url]
-    if use_cookies:
-        metadata_cmd.extend(["--cookies", cookies])
-    else:
-        metadata_cmd.extend(["--cookies-from-browser", "chrome"])
-    
-    print(f"Fetching metadata for: {url}")
-    try:
-        result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
+        print(f"Downloading Instagram video from: {url}")
         
-        if result.returncode != 0:
-            print(f"Error fetching metadata: {result.stderr}")
-            # Try with Firefox cookies if Chrome failed
-            if not use_cookies:
-                # Replace chrome with firefox in the command
-                for i, arg in enumerate(metadata_cmd):
-                    if arg == "chrome":
-                        metadata_cmd[i] = "firefox"
-                        break
-                result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode != 0:
-                    print("Failed with Firefox cookies too. Trying without cookies...")
-                    # Remove cookies arguments and try again
-                    metadata_cmd = ["yt-dlp", "--dump-json", url, 
-                                  "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"]
-                    result = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=60)
-                    if result.returncode != 0:
-                        return None, None
-            else:
-                return None, None
-            
-        if not result.stdout.strip():
-            print("Error: No metadata returned from yt-dlp")
+        # 1. Extract direct video URL and metadata (including description) using yt-dlp
+        video_url, yt_metadata = get_instagram_video_url_and_metadata(url, cookies_file)
+        if not video_url:
+            print("Error: Could not extract video URL")
             return None, None
-            
-        # Parse JSON metadata
-        info = json.loads(result.stdout)
         
-    except subprocess.TimeoutExpired:
-        print("Error: Metadata fetch timed out")
-        return None, None
-    except json.JSONDecodeError as e:
-        print(f"Error parsing metadata JSON: {e}")
-        print(f"Raw output: {result.stdout[:200]}...")
-        print(f"Error output: {result.stderr}")
-        return None, None
-    except Exception as e:
-        print(f"Unexpected error during metadata fetch: {e}")
-        return None, None
-
-    # Extract Instagram-specific metadata safely
-    metadata = {
-        "title": info.get("title", "Instagram Video"),
-        "description": info.get("description", ""),
-        "uploader": info.get("uploader", ""),
-        "uploader_id": info.get("uploader_id", ""),
-        "uploader_url": info.get("uploader_url", ""),
-        "upload_date": info.get("upload_date", ""),
-        "timestamp": info.get("timestamp", ""),
-        "duration": info.get("duration", 0),
-        "view_count": info.get("view_count", 0),
-        "like_count": info.get("like_count", 0),
-        "comment_count": info.get("comment_count", 0),
-        "webpage_url": info.get("webpage_url", url),
-        "extractor": info.get("extractor", "instagram"),
-        "format": info.get("format", ""),
-        "width": info.get("width", 0),
-        "height": info.get("height", 0),
-        "fps": info.get("fps", 0),
-        "age_limit": info.get("age_limit", 0),
-        "id": info.get("id", ""),
-    }
-
-    print("--- Instagram Video Metadata ---")
-    for key, value in metadata.items():
-        print(f"{key}: {value}")
-
-    # Clean filename for download
-    safe_title = clean_filename(metadata["title"])
-    if not safe_title or safe_title.lower() in ['instagram video', '']:
-        # Use uploader and timestamp if title is generic
-        uploader = clean_filename(metadata.get("uploader", "unknown"))
-        timestamp = metadata.get("timestamp") or int(time.time())
-        safe_title = f"{uploader}_{timestamp}"
-    
-    safe_title = safe_title[:100]  # Limit length to avoid filesystem issues
-    
-    # Command to download video
-    download_cmd = [
-        "yt-dlp",
-        "-f", "best[height<=720][ext=mp4]/best[ext=mp4]/best",
-        "-o", f"{output_path}/%(title).100s.%(ext)s",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        url
-    ]
-    
-    if use_cookies:
-        download_cmd.extend(["--cookies", cookies])
-    else:
-        download_cmd.extend(["--cookies-from-browser", "chrome"])
-
-    print(f"Downloading Instagram video: {url}")
-    try:
-        download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
-        
-        if download_result.returncode != 0:
-            print(f"Error downloading video: {download_result.stderr}")
-            # Try with Firefox cookies
-            if not use_cookies:
-                # Replace chrome with firefox in the command
-                for i, arg in enumerate(download_cmd):
-                    if arg == "chrome":
-                        download_cmd[i] = "firefox"
-                        break
-                download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
-                if download_result.returncode != 0:
-                    print("Failed with Firefox cookies too. Trying without cookies...")
-                    # Remove cookies arguments and try again
-                    download_cmd = [
-                        "yt-dlp",
-                        "-f", "best[height<=720][ext=mp4]/best[ext=mp4]/best",
-                        "-o", f"{output_path}/%(title).100s.%(ext)s",
-                        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        url
-                    ]
-                    download_result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=300)
-                    if download_result.returncode != 0:
-                        return None, metadata
-            else:
-                return None, metadata
-            
-        print("Download completed successfully!")
-        
-        # Find the downloaded file
-        downloaded_file = find_downloaded_file(output_path, safe_title, metadata["id"])
-        
-        return downloaded_file, metadata
-        
-    except subprocess.TimeoutExpired:
-        print("Error: Video download timed out")
-        return None, metadata
-    except Exception as e:
-        print(f"Unexpected error during download: {e}")
-        return None, metadata
-
-
-def find_downloaded_file(output_path: str, safe_title: str, video_id: str) -> Optional[str]:
-    """Find the downloaded file in the output directory"""
-    
-    # Common video extensions
-    extensions = ['.mp4', '.webm', '.mkv', '.avi']
-    
-    # Try to find file by title
-    for ext in extensions:
-        potential_file = os.path.join(output_path, f"{safe_title}{ext}")
-        if os.path.exists(potential_file):
-            return potential_file
-    
-    # If not found by title, search all files in directory
-    if os.path.exists(output_path):
-        for filename in os.listdir(output_path):
-            if (video_id and video_id in filename) or safe_title in filename:
-                full_path = os.path.join(output_path, filename)
-                if os.path.isfile(full_path) and any(filename.endswith(ext) for ext in extensions):
-                    return full_path
-    
-    print(f"Warning: Could not locate downloaded file in {output_path}")
-    return None
-
-
-def clean_filename(title: str) -> str:
-    """Clean title for filename"""
-    if not title:
-        return ""
-    # Remove or replace problematic characters
-    cleaned = re.sub(r'[<>:"/\\|?*#]', '', title)
-    cleaned = re.sub(r'[^\w\s-]', '', cleaned)
-    return cleaned.strip()
-
-
-# Usage example (synchronous wrapper if needed)
-    """Synchronous wrapper for the async Instagram downloader"""
-    import asyncio
-    
-    try:
-        # Try to get the current event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If we're in an async context, we can't use run()
-            print("Warning: Running in async context. Please use the async version directly.")
+        # 2. Download video bytes
+        video_bytes = await download_video(video_url)
+        if not video_bytes:
+            print("Error: Could not download video bytes")
             return None, None
-        else:
-            return loop.run_until_complete(download_instagram_video(url, cookies, output_path))
-    except RuntimeError:
-        # No event loop exists, create a new one
-        return asyncio.run(download_instagram_video(url, cookies, output_path))
+        
+        # 3. Create BytesIO object
+        video_file_like = io.BytesIO(video_bytes)
+        
+        # 4. Create metadata dict with description from yt-dlp
+        post_id, post_type = extract_instagram_url_info(url)
+        metadata = {
+            "title": yt_metadata.get('title', f"Instagram {post_type or 'video'}") if yt_metadata else f"Instagram {post_type or 'video'}",
+            "description": yt_metadata.get('description', '') if yt_metadata else '',
+            "uploader": yt_metadata.get('uploader', 'Instagram User') if yt_metadata else 'Instagram User',
+            "uploader_id": yt_metadata.get('uploader_id', '') if yt_metadata else '',
+            "duration": yt_metadata.get('duration', 0) if yt_metadata else 0,
+            "view_count": yt_metadata.get('view_count', 0) if yt_metadata else 0,
+            "like_count": yt_metadata.get('like_count', 0) if yt_metadata else 0,
+            "source_url": url,
+            "direct_video_url": video_url,
+            "post_id": post_id,
+            "post_type": post_type,
+        }
+        
+        print(f"✅ Successfully downloaded {len(video_bytes)} bytes")
+        if metadata.get('description'):
+            print(f"📝 Description found: {metadata['description'][:150]}...")
+        
+        return video_file_like, metadata
+        
+    except Exception as e:
+        print(f"Error downloading Instagram video: {e}")
+        return None, None
 def get_instagram_comments_info(url):
     """
     Extract basic comment information from Instagram URL
@@ -343,4 +123,317 @@ def get_instagram_comments_info(url):
             "url": url,
             "extracted_at": datetime.now().isoformat()
         }
+
+
+class InstagramAgent:
+    def __init__(self):
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        self.client_timeout = 120
+
+    async def get_recipe_from_url(self, url: str) -> Dict:
+        """
+        Process Instagram video URL and return a Guide-compatible dict
+        Returns a dict that can be directly converted to Guide model
+        """
+        # Download video bytes and metadata
+        video_file_like, metadata = await download_instagram_video_bytes(url)
+        if not video_file_like or not metadata:
+            raise Exception("Could not download Instagram video.")
+
+        video_bytes = video_file_like.getvalue()
+        print(f"📦 Video downloaded: {len(video_bytes)} bytes")
+        
+        # Transcribe using Whisper
+        print("=" * 60)
+        print("STARTING TRANSCRIPTION PROCESS")
+        print("=" * 60)
+        transcription, whisper_err = await transcribe_video_whisper_api(video_bytes, api_key=self.openai_api_key)
+        print("=" * 60)
+        print("TRANSCRIPTION PROCESS COMPLETED")
+        print("=" * 60)
+        
+        if whisper_err:
+            print(f"❌ Transcription error: {whisper_err}")
+            raise Exception(f"Transcription failed: {whisper_err}")
+        
+        print(f"📝 Transcription result: {len(transcription)} characters")
+        if transcription:
+            print(f"Transcription preview: {transcription[:200]}...")
+        
+        # Early warning if no transcription data
+        if not transcription or len(transcription) < 50:
+            print("⚠️  WARNING: Transcription is empty or very short. AI may not be able to extract meaningful content.")
+            print(f"Transcription length: {len(transcription)} characters")
+
+        # Get placeholder for ocr_text (can be improved with actual OCR extraction logic)
+        ocr_text = ""
+        
+        # Get placeholder for comment (function exists, but likely returns dummy)
+        comment_info = get_instagram_comments_info(url)
+
+        guide_json, guide_err = await extract_guide_with_openai_async(
+            metadata=metadata,
+            comment_info=comment_info.get("note", "") if isinstance(comment_info, dict) else str(comment_info),
+            transcription=transcription,
+            ocr_text=ocr_text,
+            api_key=self.openai_api_key
+        )
+        if guide_err:
+            raise Exception(f"Guide extraction failed: {guide_err}")
+
+        # Ensure all required Guide fields are present
+        guide_response = {
+            "url": metadata.get("source_url", url),
+            "title": guide_json.get("title", "Instagram Guide"),
+            "description": guide_json.get("description", ""),
+            "content_type": guide_json.get("content_type", "general"),
+            "materials": guide_json.get("materials", []),
+            "steps": guide_json.get("steps", []),
+            "metadata": guide_json.get("metadata", {
+                "difficulty": "medium",
+                "tags": [],
+            }),
+            "tools": guide_json.get("tools", []),
+            "tips": guide_json.get("tips", []),
+            "prerequisites": guide_json.get("prerequisites", []),
+            "ocrExtractedInfo": str(bool(ocr_text)),
+            "channelName": metadata.get("uploader", "Instagram User"),
+            "savedDate": datetime.now(),
+            "isInstructional": guide_json.get("isInstructional", False),
+            "transcription": transcription,
+            "video_analysis": transcription,  # Store transcription as video analysis
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        }
+        
+        return guide_response
+
+
+async def transcribe_video_whisper_api(video_bytes: bytes, api_key: str) -> tuple[str, str]:
+    """
+    Transcribe video using OpenAI Whisper v1 API. Returns (transcription, error)
+    Extracts audio from video first to ensure compatibility with Whisper API.
+    Returns empty string (no error) if video has no audio track.
+    """
+    import tempfile
+    import subprocess
+    
+    url = "https://api.openai.com/v1/audio/transcriptions"
+    temp_video = None
+    temp_audio = None
+    
+    try:
+        print(f"📹 Starting transcription process for {len(video_bytes)} bytes of video")
+        
+        # Create temporary video file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
+            tmp_video.write(video_bytes)
+            temp_video = tmp_video.name
+        
+        print(f"✅ Created temp video file: {temp_video}")
+        
+        # First, check if video has audio stream
+        print("🔍 Checking for audio stream in video...")
+        probe_result = subprocess.run(
+            ['ffmpeg', '-i', temp_video, '-hide_banner'],
+            capture_output=True,
+            text=True
+        )
+        
+        # Print ffmpeg output for debugging
+        print("📊 FFmpeg probe output:")
+        print(probe_result.stderr[:500])  # Print first 500 chars
+        
+        # Check if there's an audio stream in the ffmpeg output
+        has_audio = 'Stream #' in probe_result.stderr and 'Audio:' in probe_result.stderr
+        
+        if not has_audio:
+            print("⚠️ Video has no audio track detected. Skipping transcription.")
+            print(f"Debug: Looking for 'Stream #' and 'Audio:' in ffmpeg output")
+            return "", ""  # Return empty transcription, no error
+        
+        print("✅ Audio stream detected!")
+        
+        # Create temporary audio file path
+        temp_audio = tempfile.mktemp(suffix='.m4a')
+        
+        # Extract audio using ffmpeg
+        print("🎵 Extracting audio from video for Whisper API...")
+        result = subprocess.run(
+            ['ffmpeg', '-i', temp_video, '-vn', '-acodec', 'aac', '-ar', '16000', '-ac', '1', '-y', temp_audio],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print(f"❌ FFmpeg audio extraction failed with return code: {result.returncode}")
+            print(f"Error output: {result.stderr[:500]}")
+            # Check if error is due to no audio stream
+            if 'does not contain any stream' in result.stderr or 'Output file #0 does not contain any stream' in result.stderr:
+                print("⚠️ Video has no audio stream. Skipping transcription.")
+                return "", ""  # Return empty transcription, no error
+            return "", f"Audio extraction failed: {result.stderr}"
+        
+        print(f"✅ FFmpeg extraction completed successfully")
+        
+        # Check if audio file was created and has content
+        if not os.path.exists(temp_audio):
+            print(f"❌ Audio file was not created at: {temp_audio}")
+            return "", ""
+        
+        audio_size = os.path.getsize(temp_audio)
+        if audio_size == 0:
+            print("⚠️ Audio file is empty (0 bytes). Skipping transcription.")
+            return "", ""
+        
+        print(f"✅ Audio file created: {audio_size} bytes")
+        
+        # Read extracted audio
+        with open(temp_audio, 'rb') as audio_file:
+            audio_bytes = audio_file.read()
+        
+        print(f"✅ Audio read successfully: {len(audio_bytes)} bytes")
+        
+        # Create in-memory file-like object from audio bytes
+        audio_buffer = io.BytesIO(audio_bytes)
+        audio_buffer.seek(0)  # Reset to beginning
+        
+        print("🌐 Sending audio to OpenAI Whisper API...")
+        async with httpx.AsyncClient(timeout=120) as client:
+            # Send as M4A audio format
+            files = {"file": ("audio.m4a", audio_buffer, "audio/m4a")}
+            data = {"model": "whisper-1"}
+            headers = {"Authorization": f"Bearer {api_key}"}
+            
+            response = await client.post(url, files=files, data=data, headers=headers)
+            
+            print(f"📡 Whisper API response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_msg = f"OpenAI Whisper API error (status {response.status_code}): {response.text}"
+                print(f"❌ {error_msg}")
+                return "", error_msg
+            
+            resp = response.json()
+            transcription_text = resp.get("text", "")
+            print(f"✅ Transcription successful: {len(transcription_text)} characters")
+            if transcription_text:
+                print(f"Preview: {transcription_text[:100]}...")
+            return transcription_text, ""
+    except Exception as e:
+        print(f"❌ Exception during transcription: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return "", str(e)
+    finally:
+        # Clean up temporary files
+        if temp_video and os.path.exists(temp_video):
+            try:
+                os.remove(temp_video)
+            except Exception as e:
+                print(f"Warning: Could not remove temp video file: {e}")
+        if temp_audio and os.path.exists(temp_audio):
+            try:
+                os.remove(temp_audio)
+            except Exception as e:
+                print(f"Warning: Could not remove temp audio file: {e}")
+
+
+def build_guide_prompt(metadata: dict, comment_info: str, transcription: str, ocr_text: str) -> str:
+    ocr_section = f"\n\nOCR TEXT: {ocr_text}" if ocr_text else ""
+    
+    # Highlight importance of description when transcription is empty
+    description = metadata.get('description', '')
+    transcription_note = ""
+    if not transcription or len(transcription) < 50:
+        if description:
+            transcription_note = "\n⚠️ NOTE: Video has no audio transcription. Extract information primarily from DESCRIPTION.\n"
+        else:
+            transcription_note = "\n⚠️ NOTE: Video has no audio transcription and no description. Limited data available.\n"
+    
+    return (
+        f"Analyze this Instagram video and extract a step-by-step guide in JSON format.\n"
+        f"{transcription_note}\n"
+        f"TITLE: {metadata.get('title', '')}\n"
+        f"DESCRIPTION: {description}\n"
+        f"UPLOADER: {metadata.get('uploader', '')}\n"
+        f"COMMENT: {comment_info}\n"
+        f"TRANSCRIPTION: {transcription}{ocr_section}\n\n"
+        f"Extract the guide with this structure:\n"
+        f"{{\n"
+        f"  \"title\": \"guide name\",\n"
+        f"  \"description\": \"brief overview\",\n"
+        f"  \"content_type\": \"recipe|tutorial|how-to|programming|educational|general\",\n"
+        f"  \"materials\": [{{\"name\": \"item\", \"quantity\": \"amount\", \"notes\": \"notes\", \"optional\": false}}],\n"
+        f"  \"steps\": [{{\"step\": 1, \"instruction\": \"description\", \"duration\": \"time\", \"details\": \"extras\", \"code_snippet\": \"code\", \"tips\": [\"tips\"]}}],\n"
+        f"  \"metadata\": {{\"duration\": \"\", \"difficulty\": \"easy|medium|hard\", \"category\": \"\", \"tags\": [], \"estimated_time\": \"\", \"skill_level\": \"beginner|intermediate|advanced\", \"language\": \"\", \"framework\": \"\"}},\n"
+        f"  \"tools\": [\"tools/equipment\"],\n"
+        f"  \"tips\": [\"general tips\"],\n"
+        f"  \"prerequisites\": [\"requirements\"],\n"
+        f"  \"isInstructional\": true\n"
+        f"}}\n\n"
+        f"CRITICAL INSTRUCTIONS:\n"
+        f"- ONLY extract information that is EXPLICITLY present in the DESCRIPTION, TRANSCRIPTION, COMMENT, or OCR TEXT\n"
+        f"- PRIORITIZE: If TRANSCRIPTION is empty, use DESCRIPTION as primary source (Instagram recipes often have full details in description)\n"
+        f"- For Instagram posts: Description often contains complete recipe ingredients and steps - extract them carefully\n"
+        f"- DO NOT make up, infer, or assume any steps, ingredients, or instructions that are not clearly stated\n"
+        f"- If TRANSCRIPTION is empty AND DESCRIPTION is empty, set \"isInstructional\": false and return minimal structure\n"
+        f"- Set \"isInstructional\": true when you can extract clear, specific step-by-step instructions from description OR transcription\n"
+        f"- For recipes: extract ingredients from description, transcription, or comments\n"
+        f"- For tutorials: extract steps from description, transcription, or comments\n"
+        f"- Use OCR text for precise measurements, code, or commands when available\n"
+        f"- Return only valid JSON\n\n"
+        f"Extract now:\n"
+    )
+
+async def extract_guide_with_openai_async(metadata: dict, comment_info: str, transcription: str, ocr_text: str, api_key: str) -> tuple[Any, str]:
+    """
+    Calls OpenAI chat completions (GPT-4o) to extract a guide, requesting JSON-only response as in Go. Returns (json_obj, error)
+    """
+    url = "https://api.openai.com/v1/chat/completions"
+    prompt = build_guide_prompt(metadata, comment_info, transcription, ocr_text)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": "You are an expert content analyzer that extracts step-by-step guides from instructional videos. You MUST ONLY extract information explicitly present in the provided transcription. NEVER make up, infer, or hallucinate content. If there is insufficient information, return a minimal structure with isInstructional set to false. Return valid JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 1200,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(url, headers=headers, content=json.dumps(payload))
+            if resp.status_code != 200:
+                return None, f"OpenAI GPT-4o API error (status {resp.status_code}): {resp.text}"
+            resp_json = resp.json()
+            choices = resp_json.get('choices', [])
+            if not choices:
+                return None, "No choices in OpenAI chat response"
+            content = choices[0]["message"].get("content", "")
+            json_result = _clean_and_parse_json_response(content)
+            return json_result, ""
+    except Exception as e:
+        return None, str(e)
+
+def _clean_and_parse_json_response(content: str) -> dict:
+    """Remove code block markers and parse JSON."""
+    text = content.strip()
+    if text.startswith('```json'):
+        text = text[7:]
+    if text.endswith('```'):
+        text = text[:-3]
+    elif text.startswith('```'):
+        text = text[3:]
+        if text.endswith('```'):
+            text = text[:-3]
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"raw": text, "error": "Could not parse JSON"}
 
