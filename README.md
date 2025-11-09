@@ -39,29 +39,32 @@ python src/main.py
 
 Alternatively, you can run the service using Docker:
 
-1. **Build the Docker image:**
+1. **Run the pre-built Docker image:**
 
 ```bash
-docker build -t clipsyu-backend .
+docker run -p 8000:8000 --name clipsy-ai -it --env-file .env amaan287/clipsy-ai:latest
 ```
 
-2. **Run the container:**
+Or run in detached mode:
 
 ```bash
-docker run -d -p 8000:8000 --env-file .env --name clipsyu-backend clipsyu-backend
+docker run -d -p 8000:8000 --name clipsy-ai --env-file .env amaan287/clipsy-ai:latest
 ```
 
-Or run interactively:
+2. **Stop the container:**
 
 ```bash
-docker run -p 8000:8000 --env-file .env clipsyu-backend
+docker stop clipsy-ai
+docker rm clipsy-ai
 ```
 
-3. **Stop the container:**
+**Building locally (optional):**
+
+If you want to build the Docker image locally instead:
 
 ```bash
-docker stop clipsyu-backend
-docker rm clipsyu-backend
+docker build -t clipsy-ai .
+docker run -p 8000:8000 --name clipsy-ai -it --env-file .env clipsy-ai
 ```
 
 ## API Usage
